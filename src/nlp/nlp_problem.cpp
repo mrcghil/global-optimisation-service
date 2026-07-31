@@ -98,4 +98,25 @@ std::vector<double> NLPProblem::eval_constraint_jacobian(const std::vector<doubl
     return constraint_values;
 }
 
+std::vector<double> NLPProblem::eval_lagrangian_hessian(
+    const std::vector<double>& x,
+    double objective_factor,
+    const std::vector<double>& constraint_multipliers) const {
+    if (x.size() != num_variables_) {
+        throw NLPError("eval_lagrangian_hessian: x.size() != num_variables");
+    }
+    if (constraint_multipliers.size() != num_constraints_) {
+        throw NLPError("eval_lagrangian_hessian: constraint_multipliers.size() != num_constraints");
+    }
+    // Pack weights aligned to backend output layout: output 0 is the objective,
+    // outputs 1..m are the constraints.  The backend's weighted-sum Hessian
+    // Σ weights[i]·∇²(output_i) is therefore exactly objective_factor·∇²f + Σ λ_i·∇²g_i.
+    std::vector<double> weights(num_constraints_ + 1);
+    weights[0] = objective_factor;
+    for (std::size_t i = 0; i < num_constraints_; ++i) {
+        weights[1 + i] = constraint_multipliers[i];
+    }
+    return backend_->eval_hessian(x, weights);
+}
+
 }  // namespace goss::nlp

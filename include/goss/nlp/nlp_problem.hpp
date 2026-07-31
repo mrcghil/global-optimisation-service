@@ -42,6 +42,19 @@ class NLPProblem {
 
     std::vector<double> eval_constraint_jacobian(const std::vector<double>& x) const;
 
+    /// Returns the Lagrangian Hessian sparsity pattern (lower-triangle, w.r.t. x).
+    /// Delegates directly to the backend's hessian_sparsity() — no re-indexing needed
+    /// because the Hessian is over the variable space only.
+    const ad::SparsityPattern& lagrangian_hessian_sparsity() const { return backend_->hessian_sparsity(); }
+
+    /// Evaluates the Lagrangian Hessian: objective_factor·∇²f + Σ λ_i·∇²g_i.
+    /// Packs weights as [objective_factor, λ_0, ..., λ_{m-1}] and delegates to
+    /// the backend's weighted-sum Hessian, which returns the exact Lagrangian Hessian
+    /// aligned to lagrangian_hessian_sparsity() (lower-triangle, col <= row).
+    std::vector<double> eval_lagrangian_hessian(const std::vector<double>& x,
+                                                double objective_factor,
+                                                const std::vector<double>& constraint_multipliers) const;
+
  private:
     std::unique_ptr<ad::ADBackend> backend_;
     std::size_t num_variables_;

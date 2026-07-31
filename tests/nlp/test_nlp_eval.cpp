@@ -59,3 +59,22 @@ TEST(NLPEval, ConstraintJacobianNeverReferencesObjectiveRow) {
         EXPECT_LT(constraint_index, problem.num_constraints());
     }
 }
+
+TEST(NLPEval, LagrangianHessianObjectiveOnlyIsTwiceIdentity) {
+    // objective x0^2 + x1^2 -> Hessian 2*I; constraint is linear -> zero Hessian.
+    auto problem = make_quad_problem("nlp_laghess");
+    const auto& pattern = problem.lagrangian_hessian_sparsity();
+    auto values = problem.eval_lagrangian_hessian({1.0, 2.0}, 1.0, {0.0});
+    ASSERT_EQ(pattern.size(), values.size());
+    for (std::size_t k = 0; k < pattern.size(); ++k) {
+        const auto [row, col] = pattern[k];
+        EXPECT_GE(row, col);                      // lower triangle
+        EXPECT_DOUBLE_EQ(values[k], row == col ? 2.0 : 0.0);
+    }
+}
+
+TEST(NLPEval, LagrangianHessianRejectsWrongMultiplierCount) {
+    auto problem = make_quad_problem("nlp_lagbad");
+    EXPECT_THROW(problem.eval_lagrangian_hessian({1.0, 2.0}, 1.0, {0.0, 0.0}),
+                 goss::nlp::NLPError);
+}
