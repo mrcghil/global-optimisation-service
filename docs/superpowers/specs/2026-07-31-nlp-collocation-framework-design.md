@@ -70,7 +70,7 @@ Support:                   sim/           Initial guess & scaling, validation-by
 | `ad/` | AD backend interface + CppADCodeGen impl: sparse ∇f, Jᵍ, ∇²L | — |
 | `nlp/` | `NLPProblem`: flat `z`, variable bounds, `g(z)` bounds, sparse-derivative callbacks | `ad/` |
 | `transcription/` | `Transcription` interface + `Trapezoidal`, `HermiteSimpson`; compiles `Problem` → `NLPProblem` | `nlp/` |
-| `model/` | DSL: `State`, `Control`, `Dynamics`, `PathConstraint`, `BoundaryConstraint`, `Cost` → `Problem` | — |
+| `model/` | DSL: `State`, `Control`, `Dynamics`, `PathConstraint`, `BoundaryConstraint`, `Cost`, `Component` (sub-model composition) → `Problem` | — |
 | `solver/` | `Solver` interface + `IpoptAdapter`, `NloptAdapter` | `nlp/` |
 | `sim/` | Initial-guess/scaling, validation-by-integration, results/plotting, benchmark harness, diagnostics | all |
 
@@ -149,9 +149,17 @@ layer is validated before the layer above depends on it.
   test.
 - **Cross-scheme agreement**: both schemes converge to the same solution.
 
-### `model/` — DSL
+### `model/` — DSL + composition
 - Assembly tests: declarations produce expected NLP dimensions/variable ordering.
-- **Queue example as a permanent integration fixture.**
+- **Composition tests**: name resolution (unresolved/duplicate names error);
+  topological ordering of inline expressions; cycle among inline expressions is
+  a setup error; inline vs. algebraic flavor of a derived quantity produce
+  equivalent optima (inline substitution ≡ algebraic-variable + defining
+  constraint) on a small model.
+- **Isolated component tests**: a `Component` (e.g. the service-rate model) is
+  unit-tested standalone before composition.
+- **Queue example as a permanent integration fixture**, built from composed
+  components across files.
 
 ### `solver/` — adapters + full chain
 - **Hock-Schittkowski subset** (hand-ported, ~10 problems): assert we reach
@@ -178,14 +186,138 @@ layer is validated before the layer above depends on it.
 build parsers — hand-port a curated Hock-Schittkowski subset into the DSL as
 fixtures. Parsing CUTEst/COCONUT at scale is a separate later project.
 
-## 7. Build & Tooling
+## 7. Using the Framework: Solving a New Problem
+
+Because of the layering, there are **three entry points** depending on how much
+structure a problem has. Decision tree:
+
+1. **Trajectory/dynamics problem?** → Option A (declare it via the DSL).
+2. **Plain `min f(z) s.t. g(z)`?** → Option B (hand the NLP core your functions).
+3. **Needs structure the DSL can't express yet?** → Option C (add one component
+   at a seam; core untouched).
+
+For nearly all day-to-day use the user is in Option A.
+
+### Option A — Declare an optimal-control problem (main path)
+
+The user describes structure (states, controls, dynamics, constraints, cost),
+never the NLP or any derivative. Queue example:
+
+```cpp
+Problem prob;
+auto q    = prob.add_state("queue_length");
+auto rate = prob.add_control("service_rate");
+
+prob.set_dynamics(q, [](auto& x, auto& u, auto t) {
+    return ARRIVAL_RATE - u[service_rate];
+});
+
+prob.add_path_constraint(q >= 0.0);
+prob.add_path_constraint(0.0 <= rate <= MAX_RATE);
+prob.add_boundary_constraint(q.initial() == 10.0);
+prob.set_cost(integral(q + WEIGHT * rate * rate));
+
+auto nlp    = HermiteSimpson(num_nodes).compile(prob);
+auto result = IpoptAdapter().solve(nlp, sim::linear_guess(prob));
+```
+
+The framework discretizes time, builds `z`, writes defect constraints, detects
+sparsity, codegens Jacobian/Hessian, and calls the solver.
+
+### Option B — General sparse NLP directly (`nlp/`)
+
+No time/dynamics — just `min f(z) s.t. g(z)`. Skip DSL and transcription; the AD
+layer still provides sparse derivatives automatically. This is the path used for
+the hand-ported Hock-Schittkowski test problems.
+
+```cpp
+NLPProblem nlp(num_vars, num_constraints);
+nlp.set_objective([](auto& z) { return ...; });
+nlp.set_constraints([](auto& z) { return ...; });
+nlp.set_bounds(zL, zU, gL, gU);
+auto result = IpoptAdapter().solve(nlp, z0);
+```
+
+### Option C — Extend the framework for a new problem class
+
+No rewrite; add a piece at a seam:
+
+| You have… | You implement… | Where |
+|---|---|---|
+| A new discretization scheme | a `Transcription` subclass | `transcription/` |
+| Multiple linked phases | phase objects + linkage constraints | `transcription/` |
+| Algebraic (DAE) constraints | algebraic residuals emitted at nodes | `transcription/` |
+| A new solver to try | a `Solver` adapter | `solver/` |
+| A faster AD backend | an AD backend behind the interface | `ad/` |
+
+## 8. Model Composition (splitting a Problem across files)
+
+Complex models are organized into **`Component`s** (sub-models), each typically
+its own file, composed into a parent `Problem`. Each component is understandable
+and testable in isolation.
+
+A `Component` may contribute any of:
+- **states + dynamics** (a true subsystem),
+- **derived quantities** — a named value computed from states/controls/other
+  derived values (e.g. `service_rate = g(queue_length, t)`),
+- **constraints** and **cost terms**.
+
+The parent wires component inputs/outputs **by name**: e.g. `queue.cpp` declares
+the `queue_length` state; `service_model.cpp` declares a component that reads
+`queue_length` and publishes `service_rate`; the queue's dynamics consume the
+published `service_rate`.
+
+### Two flavors of derived quantity
+
+A derived quantity is declared as one of two kinds; the user chooses per
+sub-model:
+
+1. **Inline expression** — substituted directly into consumers' equations. No
+   new NLP variable; smallest, sparsest NLP. Best for simple explicit relations.
+2. **Algebraic variable** — becomes a real NLP variable with a defining
+   constraint (`v − g(x,u,t) = 0`) enforced at each collocation node (DAE-style).
+   Larger NLP, but supports implicit/complex relations and makes the quantity
+   directly inspectable in the solution. **This reuses the planned DAE seam in
+   `transcription/`.**
+
+```cpp
+// service_model.cpp
+Component service_model() {
+    Component c("service");
+    auto q = c.input_state("queue_length");        // wired by name from parent
+
+    // Flavor 1: inline expression
+    c.add_derived("service_rate", [](auto& x, auto& u, auto t) {
+        return BASE_RATE + SLOPE * x[queue_length];
+    });
+
+    // Flavor 2 (alternative): algebraic variable with defining relation
+    // c.add_algebraic("service_rate", defining_residual, /*bounds*/ 0.0, MAX_RATE);
+    return c;
+}
+
+// queue.cpp
+prob.add_component(service_model());
+prob.set_dynamics(q, [](auto& x, auto& u, auto& d, auto t) {
+    return ARRIVAL_RATE - d[service_rate];          // consume published quantity
+});
+```
+
+**Composition contract:** components declare named inputs (states/controls/
+derived values they consume) and named outputs (states/derived/algebraic they
+publish). The parent resolves the name graph at `build()`, erroring on unresolved
+or duplicated names, and orders inline-expression evaluation topologically
+(cycles among inline expressions are a setup error; genuine implicit relations
+must use the algebraic-variable flavor).
+
+## 9. Build & Tooling
 
 - **CMake** with `FetchContent`/`find_package` for IPOPT, NLopt,
   CppAD/CppADCodeGen, Eigen, GoogleTest.
 - **CI** runs the full bottom-up test pyramid.
 - FD + complex-step derivative-verification helpers live in a shared test utility.
 
-## 8. Explicitly Out of Scope for v1
+## 10. Explicitly Out of Scope for v1
 
 - Mesh refinement (adaptive node placement) — later phase.
 - Pseudospectral collocation — later phase (interface will allow it).
