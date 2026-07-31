@@ -161,7 +161,8 @@ target_include_directories(goss_sim INTERFACE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(goss_sim INTERFACE goss_model goss_transcription goss_nlp goss_ad)
 
 add_executable(goss_sim_tests
-  tests/sim/test_initial_guess.cpp)
+  tests/sim/test_initial_guess.cpp
+  tests/sim/test_trajectory.cpp)
 target_include_directories(goss_sim_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_sim_tests PRIVATE
   goss_sim goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
