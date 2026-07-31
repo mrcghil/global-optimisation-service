@@ -5,6 +5,7 @@
 #include <vector>
 #include "goss/ad/cppadcg_backend.hpp"
 #include "goss/nlp/nlp_problem.hpp"
+#include "goss/transcription/errors.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
 #include "goss/transcription/variable_layout.hpp"
@@ -22,6 +23,15 @@ struct HermiteSimpson {
         const std::size_t ni = ocp.mesh.num_intervals;
         const double t0 = ocp.mesh.t_initial;
         const double h = ocp.mesh.interval_width();
+
+        // Validate bound-vector sizes before touching any element.
+        if (ocp.state_lower.size() != ns || ocp.state_upper.size() != ns)
+            throw TranscriptionError("compile: state bound vectors must have size == num_states");
+        if (ocp.control_lower.size() != nc || ocp.control_upper.size() != nc)
+            throw TranscriptionError("compile: control bound vectors must have size == num_controls");
+        if (ocp.initial_state.size() != ns || ocp.final_state.size() != ns)
+            throw TranscriptionError("compile: initial_state/final_state must have size == num_states");
+
         VariableLayout layout(ns, nc, nn);
 
         // Packed functor: captures ocp and layout by value (cheap functors).

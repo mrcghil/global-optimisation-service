@@ -33,6 +33,23 @@ TEST(HermiteSimpson, SolvesHarmonicOscillator) {
     EXPECT_NEAR(x0_final, goss::transcription::test::harmonic_x0_solution(1.0, 0.0, tf), 1e-4);
 }
 
+TEST(HermiteSimpson, PinsInitialState) {
+    auto ocp = goss::transcription::test::make_exponential_decay(2.0, 1.0, 20);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_pin");
+    std::size_t idx = compiled.layout.state_index(0, 0);
+    EXPECT_DOUBLE_EQ(compiled.problem->variable_lower_bounds()[idx], 2.0);
+    EXPECT_DOUBLE_EQ(compiled.problem->variable_upper_bounds()[idx], 2.0);
+}
+
+TEST(HermiteSimpson, FinalStateFreeWhenNotFixed) {
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 20);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_freefinal");
+    std::size_t last = compiled.layout.num_nodes() - 1;
+    std::size_t idx = compiled.layout.state_index(last, 0);
+    EXPECT_LT(compiled.problem->variable_lower_bounds()[idx],
+              compiled.problem->variable_upper_bounds()[idx]);
+}
+
 namespace {
 double hs_max_error(std::size_t intervals) {
     const double x0 = 1.0, tf = 1.0;
