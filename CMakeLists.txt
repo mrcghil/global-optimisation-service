@@ -30,8 +30,10 @@ endif()
 
 add_library(cppadcg INTERFACE)
 target_include_directories(cppadcg INTERFACE ${CPPAD_INCLUDE_DIR} ${CPPADCG_INCLUDE_DIR})
-# Link dl (for dlopen) and cppad_lib (for CppAD runtime utilities used by CodeGen).
-target_link_libraries(cppadcg INTERFACE ${CMAKE_DL_LIBS} $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
+# Link dl (for dlopen) only; cppad_lib is NOT propagated here because cppadcg
+# is header-only and not all consumers instantiate CppAD recording machinery.
+# cppad_lib is linked where it is actually needed (see goss_ad_impl and goss_ad_tests).
+target_link_libraries(cppadcg INTERFACE ${CMAKE_DL_LIBS})
 
 enable_testing()
 add_library(goss_ad INTERFACE)
@@ -40,9 +42,11 @@ target_include_directories(goss_ad INTERFACE ${CMAKE_SOURCE_DIR}/include)
 # Non-template compile+load plumbing for CppADCGBackend (Task 7).
 # Built as a static library so that the JIT pipeline code is compiled
 # only once, keeping the main tests target lean.
+# cppad_lib is linked PUBLIC so any consumer of goss_ad_impl (e.g. goss_ad_tests
+# via the backend) transitively gets the CppAD runtime symbols.
 add_library(goss_ad_impl STATIC src/ad/cppadcg_backend.cpp)
 target_include_directories(goss_ad_impl PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(goss_ad_impl PUBLIC cppadcg)
+target_link_libraries(goss_ad_impl PUBLIC cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
 
 add_executable(goss_ad_tests
   tests/ad/test_smoke.cpp
@@ -51,7 +55,10 @@ add_executable(goss_ad_tests
   tests/ad/test_ad_backend_contract.cpp
   tests/ad/test_cppadcg_link.cpp
   tests/ad/test_cppadcg_backend.cpp)
-target_link_libraries(goss_ad_tests PRIVATE goss_ad goss_ad_impl cppadcg GTest::gtest_main)
+# test_cppadcg_link.cpp instantiates CppAD::Independent / ADFun<CGD> directly in
+# the test TU, so cppad_lib must be linked here in addition to what goss_ad_impl
+# already pulls in transitively.
+target_link_libraries(goss_ad_tests PRIVATE goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 target_include_directories(goss_ad_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 include(GoogleTest)
 gtest_discover_tests(goss_ad_tests)
