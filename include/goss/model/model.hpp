@@ -123,29 +123,35 @@ class Model {
         if (!mesh_set_) throw ModelError("Model::build: call set_mesh() before build()");
         mesh_.validate();  // early model-level mesh check
 
-        transcription::OcpProblem<DynamicsFn, CostFn> ocp;
-        ocp.num_states   = state_names_.size();
-        ocp.num_controls = control_names_.size();
-        ocp.dynamics     = std::move(dynamics);
-        ocp.cost         = std::move(cost);
-        ocp.mesh         = mesh_;
-        ocp.state_lower   = state_lower_;
-        ocp.state_upper   = state_upper_;
-        ocp.control_lower = control_lower_;
-        ocp.control_upper = control_upper_;
-        ocp.initial_state = initial_value_;
-        ocp.final_state   = final_value_;
-
-        // std::vector<bool> cannot be copy-assigned to std::vector<double>;
-        // use an explicit loop to convert: nonzero => pinned (transcription convention).
+        // Convert std::vector<bool> to std::vector<double> first;
+        // nonzero => pinned (transcription convention). std::vector<bool> cannot
+        // be copy-assigned to std::vector<double> directly (specialisation).
         const std::size_t ns = state_names_.size();
-        ocp.initial_state_fixed.assign(ns, 0.0);
-        ocp.final_state_fixed.assign(ns, 0.0);
+        std::vector<double> init_fixed(ns);
+        std::vector<double> final_fixed(ns);
         for (std::size_t i = 0; i < ns; ++i) {
-            ocp.initial_state_fixed[i] = initial_fixed_[i] ? 1.0 : 0.0;
-            ocp.final_state_fixed[i]   = final_fixed_[i]   ? 1.0 : 0.0;
+            init_fixed[i]  = initial_fixed_[i] ? 1.0 : 0.0;
+            final_fixed[i] = final_fixed_[i]   ? 1.0 : 0.0;
         }
-        return ocp;
+
+        // Use aggregate initialization so the lambdas are move-constructed rather
+        // than default-constructed. Capturing lambdas have a deleted default
+        // constructor, so we must not default-construct OcpProblem and then assign.
+        return transcription::OcpProblem<DynamicsFn, CostFn>{
+            state_names_.size(),
+            control_names_.size(),
+            std::move(dynamics),
+            std::move(cost),
+            mesh_,
+            state_lower_,
+            state_upper_,
+            control_lower_,
+            control_upper_,
+            initial_value_,
+            std::move(init_fixed),
+            final_value_,
+            std::move(final_fixed)
+        };
     }
 
  private:
