@@ -1,0 +1,6 @@
+build/
+.git/
+.superpowers/
+*.o
+*.so
+.DS_Store

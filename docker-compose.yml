@@ -1,0 +1,20 @@
+# docker-compose.yml — production-realistic CI entrypoint
+#
+# By default INJECT_ZSCALER_CA is false so the image is portable for CI
+# runners outside the corporate network.  On a Zscaler machine pass:
+#   INJECT_ZSCALER_CA=true docker compose build
+# or set the variable in your CI environment before running docker compose.
+services:
+  build:
+    build:
+      context: .
+      target: build-base
+      args:
+        INJECT_ZSCALER_CA: ${INJECT_ZSCALER_CA:-false}
+    volumes:
+      - .:/work
+    working_dir: /work
+    command: >
+      bash -c "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &&
+               cmake --build build &&
+               ctest --test-dir build --output-on-failure"

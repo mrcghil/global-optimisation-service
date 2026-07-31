@@ -1,0 +1,10 @@
+# Build output
+build/
+
+# SDD / superpowers scratch (ledgers, briefs, reports)
+.superpowers/
+
+# Editor / OS cruft
+.DS_Store
+*.o
+*.so
