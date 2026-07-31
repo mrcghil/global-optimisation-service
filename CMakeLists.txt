@@ -76,3 +76,44 @@ target_link_libraries(goss_nlp_tests PRIVATE
   goss_nlp goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 target_include_directories(goss_nlp_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 gtest_discover_tests(goss_nlp_tests)
+
+# ---- Solver layer: IPOPT + NLopt via pkg-config ----
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(IPOPT REQUIRED ipopt)
+pkg_check_modules(NLOPT REQUIRED nlopt)
+
+# Reusable INTERFACE targets so every consumer (tests now, goss_solver in the
+# solver layer) inherits the correct include dirs, -DHAVE_CSTDDEF, and link
+# flags without duplication. IPOPT 3.11.9 headers #error without HAVE_CSTDDEF.
+add_library(goss_ipopt_iface INTERFACE)
+target_include_directories(goss_ipopt_iface INTERFACE ${IPOPT_INCLUDE_DIRS})
+target_compile_options(goss_ipopt_iface INTERFACE ${IPOPT_CFLAGS_OTHER})
+target_link_libraries(goss_ipopt_iface INTERFACE ${IPOPT_LIBRARIES})
+target_link_directories(goss_ipopt_iface INTERFACE ${IPOPT_LIBRARY_DIRS})
+
+add_library(goss_nlopt_iface INTERFACE)
+target_include_directories(goss_nlopt_iface INTERFACE ${NLOPT_INCLUDE_DIRS})
+target_compile_options(goss_nlopt_iface INTERFACE ${NLOPT_CFLAGS_OTHER})
+target_link_libraries(goss_nlopt_iface INTERFACE ${NLOPT_LIBRARIES})
+target_link_directories(goss_nlopt_iface INTERFACE ${NLOPT_LIBRARY_DIRS})
+
+add_library(goss_solver STATIC src/solver/ipopt_solver.cpp src/solver/nlopt_solver.cpp)
+target_include_directories(goss_solver PUBLIC ${CMAKE_SOURCE_DIR}/include)
+# Task 1 created goss_ipopt_iface / goss_nlopt_iface INTERFACE targets that carry
+# the include dirs, -DHAVE_CSTDDEF (IPOPT 3.11.9 headers #error without it), and
+# link flags. Link them PRIVATE so goss_solver inherits everything in one line.
+target_link_libraries(goss_solver PUBLIC goss_nlp goss_ad
+  PRIVATE goss_ipopt_iface goss_nlopt_iface)
+
+add_executable(goss_solver_tests
+  tests/solver/test_solver_link.cpp
+  tests/solver/test_solver_interface.cpp
+  tests/solver/test_ipopt_solver.cpp
+  tests/solver/test_nlopt_solver.cpp
+  tests/solver/test_solver_agreement.cpp)
+target_include_directories(goss_solver_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_solver_tests PRIVATE
+  goss_solver goss_ipopt_iface goss_nlopt_iface
+  goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>
+  GTest::gtest_main)
+gtest_discover_tests(goss_solver_tests)

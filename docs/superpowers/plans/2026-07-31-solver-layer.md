@@ -13,7 +13,7 @@
 - Language: **C++17**.
 - The `Solver` interface MUST depend only on `goss::nlp::NLPProblem` + `goss::nlp` types — NEVER on IPOPT or NLopt types. Solver-neutrality is load-bearing (mirrors how `NLPProblem` is backend-agnostic).
 - IPOPT- and NLopt-specific types appear ONLY inside their respective adapter `.cpp` files (`ipopt_solver.cpp`, `nlopt_solver.cpp`), never in any public header.
-- IPOPT version is **3.11.9** (Ubuntu `coinor-libipopt-dev`). It predates 3.14, so do NOT reference `Maximum_WallTime_Exceeded` (added in 3.14). Autotools build ships NO CMake config — discover via **pkg-config** (`ipopt`). Include header is `<coin-or/IpTNLP.hpp>` / `<coin-or/IpIpoptApplication.hpp>`.
+- IPOPT version is **3.11.9** (Ubuntu `coinor-libipopt-dev`). It predates 3.14, so do NOT reference `Maximum_WallTime_Exceeded` (added in 3.14). Autotools build ships NO CMake config — discover via **pkg-config** (`ipopt`). **Verified in Task 1:** headers live under `/usr/include/coin/`, so the include form is `<IpTNLP.hpp>` / `<IpIpoptApplication.hpp>` (NO `coin-or/` prefix), and IPOPT 3.11.9 headers require `-DHAVE_CSTDDEF` — both supplied by the `goss_ipopt_iface` INTERFACE target created in Task 1 (link it PRIVATE to inherit the include dir + flag). `liblapack-dev`/`libblas-dev` are in the image for IPOPT's link deps.
 - NLopt is discovered via **pkg-config** (`nlopt`); C++ header `<nlopt.hpp>`; both `libnlopt-dev` and `libnlopt-cxx-dev` installed. Constraint sign convention: `fc(x) <= 0`.
 - `Ipopt::TNLP` subclasses MUST be heap-allocated and held by `Ipopt::SmartPtr` — never `delete`d manually. Index style is **C_STYLE (0-based)**, matching `goss`'s sparsity patterns. `Index`=int, `Number`=double.
 - IPOPT `eval_h` computes `σ·∇²f + Σλᵢ∇²gᵢ` (lower-triangle) — this is EXACTLY `NLPProblem::eval_lagrangian_hessian(x, σ, λ)`. Use exact Hessian (`hessian_approximation=exact`), not limited-memory.
@@ -268,11 +268,12 @@ class Solver {
 Append to the solver section of `CMakeLists.txt`:
 ```cmake
 add_library(goss_solver STATIC src/solver/ipopt_solver.cpp src/solver/nlopt_solver.cpp)
-target_include_directories(goss_solver PUBLIC ${CMAKE_SOURCE_DIR}/include
-  PRIVATE ${IPOPT_INCLUDE_DIRS} ${NLOPT_INCLUDE_DIRS})
+target_include_directories(goss_solver PUBLIC ${CMAKE_SOURCE_DIR}/include)
+# Task 1 created goss_ipopt_iface / goss_nlopt_iface INTERFACE targets that carry
+# the include dirs, -DHAVE_CSTDDEF (IPOPT 3.11.9 headers #error without it), and
+# link flags. Link them PRIVATE so goss_solver inherits everything in one line.
 target_link_libraries(goss_solver PUBLIC goss_nlp goss_ad
-  PRIVATE ${IPOPT_LIBRARIES} ${NLOPT_LIBRARIES})
-target_link_directories(goss_solver PRIVATE ${IPOPT_LIBRARY_DIRS} ${NLOPT_LIBRARY_DIRS})
+  PRIVATE goss_ipopt_iface goss_nlopt_iface)
 ```
 This references `src/solver/ipopt_solver.cpp` and `src/solver/nlopt_solver.cpp`, which do not exist yet (Tasks 3 and 6). To keep the build green NOW, create minimal placeholder .cpp files each containing only a comment and an `#include "goss/solver/solver.hpp"`. They are filled in later tasks.
 
@@ -414,7 +415,7 @@ class IpoptSolver : public Solver {
 - [ ] **Step 4: Write the adapter + solver in the .cpp**
 
 Replace the placeholder `src/solver/ipopt_solver.cpp`. Structure:
-- `#include <coin-or/IpTNLP.hpp>`, `<coin-or/IpIpoptApplication.hpp>`, `<coin-or/IpSolveStatistics.hpp>`, the header, `<vector>`.
+- `#include <IpTNLP.hpp>`, `<IpIpoptApplication.hpp>`, `<IpSolveStatistics.hpp>`, the header, `<vector>`. **NOTE (verified in Task 1):** IPOPT 3.11.9 headers are under `/usr/include/coin/` (NOT `coin-or/`), so the include form has NO prefix — `<IpTNLP.hpp>`, not `<coin-or/IpTNLP.hpp>`. The `goss_ipopt_iface` target (linked by `goss_solver`) supplies the `-I/usr/include/coin` include dir and `-DHAVE_CSTDDEF`.
 - Anonymous-namespace helper `std::vector<double> to_vector(const Ipopt::Number* p, Ipopt::Index n)`.
 - `class IpoptTNLPAdapter : public Ipopt::TNLP` holding `const nlp::NLPProblem& problem_`, `const std::vector<double>& initial_guess_`, and `SolverResult& result_` (reference to the solver's result). Implement the 9 methods per the mapping above. In the STRUCTURE branch of eval_jac_g/eval_h, iterate the corresponding sparsity() pattern; in the VALUES branch, call the eval_* method and memcpy/loop into `values`.
 - The status map from `Ipopt::SolverReturn` in finalize_solution.
