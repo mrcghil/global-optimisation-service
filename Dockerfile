@@ -6,12 +6,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ gcc make cmake git ca-certificates libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Inject corporate TLS inspection root CA (Zscaler) so git/curl can reach
-# GitHub over HTTPS inside the container.  The cert is exported from the
-# host's macOS System Keychain; without it every HTTPS clone fails with
-# "server certificate verification failed".
-COPY zscaler-root-ca.crt /usr/local/share/ca-certificates/zscaler-root-ca.crt
-RUN update-ca-certificates
+# Optional: inject a corporate TLS-inspection root CA (e.g. Zscaler) so
+# git/curl can reach GitHub over HTTPS when the host intercepts TLS.
+# Disabled by default — only activated when INJECT_ZSCALER_CA=true so the
+# image stays portable for teammates and CI runners outside the corporate
+# network.  Set to "true" on any machine behind a Zscaler proxy.
+ARG INJECT_ZSCALER_CA=false
+COPY zscaler-root-ca.crt /tmp/zscaler-root-ca.crt
+RUN if [ "${INJECT_ZSCALER_CA}" = "true" ]; then \
+        cp /tmp/zscaler-root-ca.crt /usr/local/share/ca-certificates/zscaler-root-ca.crt \
+        && update-ca-certificates; \
+    fi
 
 # CppAD (headers + optional lib) from source
 ARG CPPAD_TAG=20240000.7
