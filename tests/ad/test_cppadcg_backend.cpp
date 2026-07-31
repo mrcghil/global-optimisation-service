@@ -4,6 +4,7 @@
 #include "ad/fixtures.hpp"
 #include "ad/verification.hpp"
 #include <algorithm>
+#include <random>
 
 TEST(CppADCGBackend, EvalMatchesQuadratic) {
     goss::ad::test::Quadratic f{3};
@@ -69,4 +70,24 @@ TEST(CppADCGBackend, EvalHessianRejectsWrongWeightsSize) {
     goss::ad::CppADCGBackend backend(f, f.input_size(), "quad_hess_weights_err");
     EXPECT_THROW(backend.eval_hessian({1.0, 2.0, 3.0}, {1.0, 2.0}),
                  goss::ad::ADError);
+}
+
+TEST(CppADCGBackend, RosenbrockJacobianMatchesBothOracles) {
+    goss::ad::test::Rosenbrock f;
+    goss::ad::CppADCGBackend backend(f, f.input_size(), "rosen_all");
+    auto pattern = backend.jacobian_sparsity();
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dist(-2.0, 2.0);
+    for (int trial = 0; trial < 20; ++trial) {
+        std::vector<double> x{dist(rng), dist(rng)};
+        auto values = backend.eval_jacobian(x);
+        auto fd = goss::ad::test::finite_difference_jacobian(f, x);
+        auto cs = goss::ad::test::complex_step_jacobian(f, x);
+        for (std::size_t k = 0; k < pattern.size(); ++k) {
+            auto [row, col] = pattern[k];
+            EXPECT_NEAR(values[k], cs[row][col], 1e-8);
+            EXPECT_NEAR(values[k], fd[row][col], 1e-4);
+        }
+    }
 }
