@@ -2,6 +2,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 #include "goss/model/errors.hpp"
 #include "goss/model/handles.hpp"
@@ -112,7 +113,40 @@ class Model {
     bool final_fixed(std::size_t i) const { check_state_index(i, "final_fixed"); return final_fixed_[i]; }
     double final_value(std::size_t i) const { check_state_index(i, "final_value"); return final_value_[i]; }
 
-    // build() added in Task 4.
+    /// Assembles a transcription::OcpProblem from the declared metadata.
+    ///
+    /// Throws ModelError if: no states declared, or set_mesh() was not called.
+    /// Also calls mesh_.validate() for an early model-level mesh sanity check.
+    template <typename DynamicsFn, typename CostFn>
+    transcription::OcpProblem<DynamicsFn, CostFn> build(DynamicsFn dynamics, CostFn cost) const {
+        if (state_names_.empty()) throw ModelError("Model::build: a model needs at least one state");
+        if (!mesh_set_) throw ModelError("Model::build: call set_mesh() before build()");
+        mesh_.validate();  // early model-level mesh check
+
+        transcription::OcpProblem<DynamicsFn, CostFn> ocp;
+        ocp.num_states   = state_names_.size();
+        ocp.num_controls = control_names_.size();
+        ocp.dynamics     = std::move(dynamics);
+        ocp.cost         = std::move(cost);
+        ocp.mesh         = mesh_;
+        ocp.state_lower   = state_lower_;
+        ocp.state_upper   = state_upper_;
+        ocp.control_lower = control_lower_;
+        ocp.control_upper = control_upper_;
+        ocp.initial_state = initial_value_;
+        ocp.final_state   = final_value_;
+
+        // std::vector<bool> cannot be copy-assigned to std::vector<double>;
+        // use an explicit loop to convert: nonzero => pinned (transcription convention).
+        const std::size_t ns = state_names_.size();
+        ocp.initial_state_fixed.assign(ns, 0.0);
+        ocp.final_state_fixed.assign(ns, 0.0);
+        for (std::size_t i = 0; i < ns; ++i) {
+            ocp.initial_state_fixed[i] = initial_fixed_[i] ? 1.0 : 0.0;
+            ocp.final_state_fixed[i]   = final_fixed_[i]   ? 1.0 : 0.0;
+        }
+        return ocp;
+    }
 
  private:
     void check_state_index(std::size_t i, const char* who) const {
