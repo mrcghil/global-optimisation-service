@@ -76,10 +76,54 @@ class Model {
         return control_names_[index];
     }
 
-    // Bounds / boundary / mesh setters added in Task 3-4.
+    void set_state_bounds(StateHandle s, double lower, double upper) {
+        check_state_index(s.index, "set_state_bounds");
+        if (lower > upper) throw ModelError("set_state_bounds: lower > upper for state '" + state_names_[s.index] + "'");
+        state_lower_[s.index] = lower;
+        state_upper_[s.index] = upper;
+    }
+    void set_control_bounds(ControlHandle c, double lower, double upper) {
+        check_control_index(c.index, "set_control_bounds");
+        if (lower > upper) throw ModelError("set_control_bounds: lower > upper for control '" + control_names_[c.index] + "'");
+        control_lower_[c.index] = lower;
+        control_upper_[c.index] = upper;
+    }
+    void set_initial_state(StateHandle s, double value) {
+        check_state_index(s.index, "set_initial_state");
+        initial_value_[s.index] = value;
+        initial_fixed_[s.index] = true;
+    }
+    void set_final_state(StateHandle s, double value) {
+        check_state_index(s.index, "set_final_state");
+        final_value_[s.index] = value;
+        final_fixed_[s.index] = true;
+    }
+    void set_mesh(double t_initial, double t_final, std::size_t num_intervals) {
+        mesh_ = transcription::Mesh{t_initial, t_final, num_intervals};
+        mesh_set_ = true;
+    }
+
+    double state_lower(std::size_t i) const { check_state_index(i, "state_lower"); return state_lower_[i]; }
+    double state_upper(std::size_t i) const { check_state_index(i, "state_upper"); return state_upper_[i]; }
+    double control_lower(std::size_t i) const { check_control_index(i, "control_lower"); return control_lower_[i]; }
+    double control_upper(std::size_t i) const { check_control_index(i, "control_upper"); return control_upper_[i]; }
+    bool initial_fixed(std::size_t i) const { check_state_index(i, "initial_fixed"); return initial_fixed_[i]; }
+    double initial_value(std::size_t i) const { check_state_index(i, "initial_value"); return initial_value_[i]; }
+    bool final_fixed(std::size_t i) const { check_state_index(i, "final_fixed"); return final_fixed_[i]; }
+    double final_value(std::size_t i) const { check_state_index(i, "final_value"); return final_value_[i]; }
+
     // build() added in Task 4.
 
  private:
+    void check_state_index(std::size_t i, const char* who) const {
+        if (i >= state_names_.size())
+            throw ModelError(std::string(who) + ": state index out of range");
+    }
+    void check_control_index(std::size_t i, const char* who) const {
+        if (i >= control_names_.size())
+            throw ModelError(std::string(who) + ": control index out of range");
+    }
+
     /// Throws ModelError if name is already registered as a state or control.
     void ensure_unique_name(const std::string& name) const {
         for (const auto& existing : state_names_) {
