@@ -3,6 +3,8 @@
 // Use the umbrella header — NOT the sub-header <cppad/cg/cg.hpp>.
 // Task 6 confirmed <cppad/cg.hpp> is the correct include path.
 #include <cppad/cg.hpp>
+#include <algorithm>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,9 +21,15 @@ using ADCG = CppAD::AD<CGScalar>;
 /// Ownership bundle for the JIT-compiled model.
 /// Both members must stay alive together: the library owns the symbols that
 /// the model's function pointers point into.
+///
+/// jac_rows / jac_cols hold the sparse Jacobian sparsity pattern captured
+/// once by compile_and_load via model->JacobianSparsity().  The k-th entry
+/// represents the non-zero at (jac_rows[k], jac_cols[k]).
 struct CompiledModel {
     std::unique_ptr<CppAD::cg::DynamicLib<double>> library;
     std::unique_ptr<CppAD::cg::GenericModel<double>> model;
+    std::vector<std::size_t> jac_rows;
+    std::vector<std::size_t> jac_cols;
 };
 
 /// Non-template helper declared here, defined in src/ad/cppadcg_backend.cpp.
@@ -61,8 +69,18 @@ class CppADCGBackend : public ADBackend {
         CppAD::ADFun<detail::CGScalar> fun(x, y);
         // Optimize the tape for faster source generation.
         fun.optimize();
-        // JIT-compile and load.
+        // JIT-compile and load; compile_and_load also captures jac_rows/jac_cols.
         compiled_ = detail::compile_and_load(fun, model_name);
+
+        // Build jacobian_sparsity_ from the captured rows/cols, sorted by
+        // (row, col) so the ordering is deterministic and stable across calls.
+        const std::size_t nnz = compiled_.jac_rows.size();
+        jacobian_sparsity_.reserve(nnz);
+        for (std::size_t k = 0; k < nnz; ++k) {
+            jacobian_sparsity_.emplace_back(compiled_.jac_rows[k],
+                                            compiled_.jac_cols[k]);
+        }
+        std::sort(jacobian_sparsity_.begin(), jacobian_sparsity_.end());
     }
 
     std::size_t input_size()  const override { return input_size_; }
@@ -73,14 +91,38 @@ class CppADCGBackend : public ADBackend {
         return compiled_.model->ForwardZero(x);
     }
 
-    // ---- Placeholders filled in Task 8 ---- //
+    // ---- Implemented in Task 8 ---- //
 
+    /// Returns the sorted (row, col) pairs of Jacobian non-zeros.
+    /// The k-th pair corresponds to eval_jacobian()[k].
     const SparsityPattern& jacobian_sparsity() const override {
-        throw ADError("jacobian_sparsity not yet implemented");
+        return jacobian_sparsity_;
     }
 
-    std::vector<double> eval_jacobian(const std::vector<double>&) const override {
-        throw ADError("eval_jacobian not yet implemented");
+    /// Evaluates the Jacobian at x.
+    ///
+    /// SparseJacobian(x, jac, rows, cols) fills jac with non-zero values and
+    /// rows/cols with their coordinates (in the library's internal ordering,
+    /// which may differ from our sorted jacobian_sparsity_).  We build a
+    /// (row,col)->value map and return values aligned to the stored pattern.
+    std::vector<double> eval_jacobian(const std::vector<double>& x) const override {
+        std::vector<double> raw_values;
+        std::vector<std::size_t> raw_rows, raw_cols;
+        compiled_.model->SparseJacobian(x, raw_values, raw_rows, raw_cols);
+
+        // Build lookup: (row, col) → value for alignment with stored pattern.
+        std::map<std::pair<std::size_t, std::size_t>, double> value_map;
+        for (std::size_t k = 0; k < raw_values.size(); ++k) {
+            value_map[{raw_rows[k], raw_cols[k]}] = raw_values[k];
+        }
+
+        // Return values in the exact order of jacobian_sparsity_ (sorted by (row,col)).
+        std::vector<double> aligned_values;
+        aligned_values.reserve(jacobian_sparsity_.size());
+        for (const auto& [row, col] : jacobian_sparsity_) {
+            aligned_values.push_back(value_map.at({row, col}));
+        }
+        return aligned_values;
     }
 
     // ---- Placeholders filled in Task 9 ---- //

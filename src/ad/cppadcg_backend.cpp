@@ -45,6 +45,12 @@ CompiledModel compile_and_load(CppAD::ADFun<CGScalar>& fun,
         if (!result.model) {
             throw ADError("CppADCodeGen: failed to load generated model '" + model_name + "'");
         }
+
+        // Capture the sparse Jacobian sparsity pattern once at construction.
+        // JacobianSparsity(equations, variables) fills parallel arrays of row
+        // (equations) and column (variables) indices for all non-zero entries.
+        result.model->JacobianSparsity(result.jac_rows, result.jac_cols);
+
         return result;
 
     } catch (const CppAD::cg::CGException& error) {
