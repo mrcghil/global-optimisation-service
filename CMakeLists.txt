@@ -138,3 +138,17 @@ target_link_libraries(goss_transcription_tests PRIVATE
   goss_ipopt_iface goss_nlopt_iface cppadcg
   $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_transcription_tests)
+
+# ---- Model DSL layer ----
+add_library(goss_model INTERFACE)
+target_include_directories(goss_model INTERFACE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(goss_model INTERFACE goss_transcription goss_nlp goss_ad)
+
+add_executable(goss_model_tests
+  tests/model/test_model_declaration.cpp)
+target_include_directories(goss_model_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_model_tests PRIVATE
+  goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
+  goss_ipopt_iface goss_nlopt_iface cppadcg
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+gtest_discover_tests(goss_model_tests)
