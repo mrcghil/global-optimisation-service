@@ -1,0 +1,15 @@
+// .devcontainer/devcontainer.json
+{
+  "name": "goss-dev",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "target": "build-base"
+  },
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools", "ms-vscode.cmake-tools"]
+    }
+  }
+}

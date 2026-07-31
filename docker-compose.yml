@@ -1,0 +1,13 @@
+# docker-compose.yml — production-realistic CI entrypoint
+services:
+  build:
+    build:
+      context: .
+      target: build-base
+    volumes:
+      - .:/work
+    working_dir: /work
+    command: >
+      bash -c "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &&
+               cmake --build build &&
+               ctest --test-dir build --output-on-failure"
