@@ -23,6 +23,9 @@ class NLPProblem {
                std::vector<double> constraint_lower_bounds,
                std::vector<double> constraint_upper_bounds);
 
+    NLPProblem(NLPProblem&&) = delete;
+    NLPProblem& operator=(NLPProblem&&) = delete;
+
     std::size_t num_variables() const { return num_variables_; }
     std::size_t num_constraints() const { return num_constraints_; }
 
@@ -63,8 +66,6 @@ class NLPProblem {
     std::vector<double> variable_upper_bounds_;
     std::vector<double> constraint_lower_bounds_;
     std::vector<double> constraint_upper_bounds_;
-
-    // Precomputed index maps added in Tasks 4-5.
 
     // (col, value_index) pairs for entries of the backend Jacobian whose row == 0.
     // Used to scatter eval_jacobian()[value_index] into gradient[col].

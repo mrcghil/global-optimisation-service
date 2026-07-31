@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <gtest/gtest.h>
 #include <memory>
 #include "goss/nlp/nlp_problem.hpp"
