@@ -34,6 +34,9 @@ TEST(CppADCGBackend, JacobianValuesMatchComplexStep) {
 TEST(CppADCGBackend, BandedJacobianSparsityIsTridiagonal) {
     goss::ad::test::Banded f{5};
     goss::ad::CppADCGBackend backend(f, f.input_size(), "banded_jac");
+    // Banded{5}: 5 diagonal + 4 superdiagonal = 9 structural nonzeros.
+    // Guard against vacuous pass if the pattern were empty.
+    ASSERT_EQ(backend.jacobian_sparsity().size(), 9u);
     for (auto [row, col] : backend.jacobian_sparsity()) {
         // output i depends only on x[i] and x[i+1]
         EXPECT_TRUE(col == row || col == row + 1)

@@ -53,7 +53,7 @@ CompiledModel compile_and_load(CppAD::ADFun<CGScalar>& fun,
 /// then delegates to the non-template compile_and_load() helper for the JIT
 /// pipeline (source generation → GCC compilation → dlopen).
 ///
-/// Jacobian and Hessian methods are throwing placeholders filled in Tasks 8-9.
+/// Jacobian and Hessian evaluation use permutations precomputed at construction for O(nnz) sparse output aligned to the sparsity pattern.
 class CppADCGBackend : public ADBackend {
  public:
     /// Records `function` as a CppAD tape and JIT-compiles it.
@@ -63,7 +63,11 @@ class CppADCGBackend : public ADBackend {
     ///                     templated on AD scalar type T.
     /// @param input_size   Number of independent variables.
     /// @param model_name   Name for the generated shared library (must be a
-    ///                     valid C identifier).
+    ///                     valid C identifier).  The name determines the
+    ///                     JIT-compiled shared-library filename, so it must be
+    ///                     unique across concurrently-built models/processes to
+    ///                     avoid collision; parallel test runs must use distinct
+    ///                     names.
     template <typename F>
     CppADCGBackend(const F& function, std::size_t input_size,
                    const std::string& model_name = "goss_model")
@@ -173,6 +177,14 @@ class CppADCGBackend : public ADBackend {
             compiled_.model->SparseHessian(x_probe, w_probe,
                                            probe_values, probe_rows, probe_cols);
 
+            if (probe_rows.size() != compiled_.hess_rows.size()) {
+                throw ADError(
+                    "CppADCodeGen: SparseHessian probe returned " +
+                    std::to_string(probe_rows.size()) +
+                    " entries but HessianSparsity reported " +
+                    std::to_string(compiled_.hess_rows.size()));
+            }
+
             // probe_rows/cols contains the full symmetric pattern in raw order.
             // We need to map each entry of hessian_sparsity_ (lower triangle,
             // sorted) to its raw index in probe_rows/probe_cols.
@@ -219,10 +231,12 @@ class CppADCGBackend : public ADBackend {
 
     /// Evaluates f(x) using the JIT-compiled forward pass.
     std::vector<double> eval(const std::vector<double>& x) const override {
+        if (x.size() != input_size_) {
+            throw ADError("eval: x.size() (" + std::to_string(x.size()) +
+                          ") != input_size (" + std::to_string(input_size_) + ")");
+        }
         return compiled_.model->ForwardZero(x);
     }
-
-    // ---- Implemented in Task 8 ---- //
 
     /// Returns the sorted (row, col) pairs of Jacobian non-zeros.
     /// The k-th pair corresponds to eval_jacobian()[k].
@@ -237,6 +251,10 @@ class CppADCGBackend : public ADBackend {
     /// sorted-pattern index to its raw index, so alignment is O(nnz) with no
     /// per-call heap allocation beyond the output vector.
     std::vector<double> eval_jacobian(const std::vector<double>& x) const override {
+        if (x.size() != input_size_) {
+            throw ADError("eval_jacobian: x.size() (" + std::to_string(x.size()) +
+                          ") != input_size (" + std::to_string(input_size_) + ")");
+        }
         std::vector<double> raw_values;
         std::vector<std::size_t> raw_rows, raw_cols;
         compiled_.model->SparseJacobian(x, raw_values, raw_rows, raw_cols);
@@ -258,8 +276,6 @@ class CppADCGBackend : public ADBackend {
         return aligned_values;
     }
 
-    // ---- Implemented in Task 9 ---- //
-
     /// Returns the sorted lower-triangle (row >= col) (row, col) pairs of
     /// Hessian non-zeros.  The k-th pair corresponds to eval_hessian()[k].
     const SparsityPattern& hessian_sparsity() const override {
@@ -275,6 +291,10 @@ class CppADCGBackend : public ADBackend {
     /// allocation beyond the output vector.
     std::vector<double> eval_hessian(const std::vector<double>& x,
                                      const std::vector<double>& weights) const override {
+        if (x.size() != input_size_) {
+            throw ADError("eval_hessian: x.size() (" + std::to_string(x.size()) +
+                          ") != input_size (" + std::to_string(input_size_) + ")");
+        }
         if (weights.size() != output_size_) {
             throw ADError(
                 "eval_hessian: weights size (" +
