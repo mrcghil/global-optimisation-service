@@ -87,3 +87,21 @@ TEST(ModelBuild, RejectsBuildWithNoStates) {
     model.set_mesh(0.0, 1.0, 4);
     EXPECT_THROW(model.build(DummyDyn{}, DummyCost{}), goss::model::ModelError);
 }
+
+// I-1 regression: bad mesh (t_final == t_initial) must throw ModelError, not TranscriptionError.
+TEST(ModelBuild, RejectsInvalidMesh) {
+    goss::model::Model model;
+    model.add_state("q");
+    model.set_mesh(1.0, 1.0, 5);   // t_final == t_initial: invalid
+    EXPECT_THROW(model.build(DummyDyn{}, DummyCost{}), goss::model::ModelError);
+}
+
+// I-2 regression: pinned initial value outside state bounds must throw ModelError.
+TEST(ModelBuild, RejectsPinnedInitialViolatingBounds) {
+    goss::model::Model model;
+    auto q = model.add_state("q");
+    model.set_state_bounds(q, 0.0, goss::transcription::kInf);  // q >= 0
+    model.set_initial_state(q, -5.0);                            // contradicts bound
+    model.set_mesh(0.0, 1.0, 5);
+    EXPECT_THROW(model.build(DummyDyn{}, DummyCost{}), goss::model::ModelError);
+}

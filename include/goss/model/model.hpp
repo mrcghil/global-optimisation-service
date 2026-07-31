@@ -115,13 +115,31 @@ class Model {
 
     /// Assembles a transcription::OcpProblem from the declared metadata.
     ///
-    /// Throws ModelError if: no states declared, or set_mesh() was not called.
-    /// Also calls mesh_.validate() for an early model-level mesh sanity check.
+    /// Throws ModelError if:
+    ///   - no states declared,
+    ///   - set_mesh() was not called,
+    ///   - mesh parameters are invalid (e.g. t_final <= t_initial, num_intervals == 0),
+    ///   - a pinned boundary value violates the state's declared bounds.
     template <typename DynamicsFn, typename CostFn>
     transcription::OcpProblem<DynamicsFn, CostFn> build(DynamicsFn dynamics, CostFn cost) const {
         if (state_names_.empty()) throw ModelError("Model::build: a model needs at least one state");
         if (!mesh_set_) throw ModelError("Model::build: call set_mesh() before build()");
-        mesh_.validate();  // early model-level mesh check
+        // Wrap mesh validation so any TranscriptionError surfaces as ModelError,
+        // ensuring build()'s contract is uniform (only ModelError escapes).
+        try {
+            mesh_.validate();
+        } catch (const transcription::TranscriptionError& mesh_error) {
+            throw ModelError(std::string("Model::build: invalid mesh: ") + mesh_error.what());
+        }
+
+        // Validate that pinned boundary values respect state bounds; an
+        // inconsistency here causes a silently infeasible problem in the solver.
+        for (std::size_t i = 0; i < state_names_.size(); ++i) {
+            if (initial_fixed_[i] && (initial_value_[i] < state_lower_[i] || initial_value_[i] > state_upper_[i]))
+                throw ModelError("Model::build: initial value for state '" + state_names_[i] + "' violates its bounds");
+            if (final_fixed_[i] && (final_value_[i] < state_lower_[i] || final_value_[i] > state_upper_[i]))
+                throw ModelError("Model::build: final value for state '" + state_names_[i] + "' violates its bounds");
+        }
 
         // Convert std::vector<bool> to std::vector<double> first;
         // nonzero => pinned (transcription convention). std::vector<bool> cannot
