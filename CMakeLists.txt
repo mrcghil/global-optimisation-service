@@ -76,3 +76,22 @@ target_link_libraries(goss_nlp_tests PRIVATE
   goss_nlp goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 target_include_directories(goss_nlp_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 gtest_discover_tests(goss_nlp_tests)
+
+# ---- Solver layer: IPOPT + NLopt via pkg-config ----
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(IPOPT REQUIRED ipopt)
+pkg_check_modules(NLOPT REQUIRED nlopt)
+
+add_executable(goss_solver_tests
+  tests/solver/test_solver_link.cpp)
+target_include_directories(goss_solver_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/tests ${IPOPT_INCLUDE_DIRS} ${NLOPT_INCLUDE_DIRS})
+# IPOPT 3.11.9 pkg-config emits -DHAVE_CSTDDEF alongside the -I flag;
+# CFLAGS_OTHER captures that token so the IPOPT headers compile correctly.
+target_compile_options(goss_solver_tests PRIVATE
+  ${IPOPT_CFLAGS_OTHER} ${NLOPT_CFLAGS_OTHER})
+target_link_libraries(goss_solver_tests PRIVATE
+  ${IPOPT_LIBRARIES} ${NLOPT_LIBRARIES} GTest::gtest_main)
+target_link_directories(goss_solver_tests PRIVATE
+  ${IPOPT_LIBRARY_DIRS} ${NLOPT_LIBRARY_DIRS})
+gtest_discover_tests(goss_solver_tests)

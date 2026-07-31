@@ -3,7 +3,9 @@ FROM ubuntu:24.04 AS build-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        g++ gcc make cmake git ca-certificates libeigen3-dev \
+        g++ gcc make cmake git ca-certificates libeigen3-dev pkg-config \
+        coinor-libipopt-dev libnlopt-dev libnlopt-cxx-dev \
+        liblapack-dev libblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional: inject a corporate TLS-inspection root CA (e.g. Zscaler) so
