@@ -62,3 +62,17 @@ target_link_libraries(goss_ad_tests PRIVATE goss_ad goss_ad_impl cppadcg $<$<BOO
 target_include_directories(goss_ad_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 include(GoogleTest)
 gtest_discover_tests(goss_ad_tests)
+
+# ---- NLP core layer ----
+add_library(goss_nlp STATIC src/nlp/nlp_problem.cpp)
+target_include_directories(goss_nlp PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(goss_nlp PUBLIC goss_ad)
+
+add_executable(goss_nlp_tests
+  tests/nlp/test_nlp_construction.cpp
+  tests/nlp/test_nlp_eval.cpp
+  tests/nlp/test_nlp_integration.cpp)
+target_link_libraries(goss_nlp_tests PRIVATE
+  goss_nlp goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+target_include_directories(goss_nlp_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+gtest_discover_tests(goss_nlp_tests)
