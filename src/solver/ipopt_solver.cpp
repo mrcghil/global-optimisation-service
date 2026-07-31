@@ -109,16 +109,18 @@ class IpoptTNLPAdapter : public Ipopt::TNLP {
         (void)z_L;
         (void)z_U;
         (void)lambda;
+        // We never enable warm_start_init_point, so IPOPT should never
+        // request dual warm-start.  Fail safe if it ever does: returning false
+        // signals a contract violation rather than silently leaving arrays
+        // uninitialised.
+        if (init_z || init_lambda) {
+            return false;
+        }
         // We only supply the primal starting point; multiplier warm-start is
         // not available from the NLPProblem interface.
         if (init_x) {
             std::copy(initial_guess_.begin(), initial_guess_.end(), x);
         }
-        // If IPOPT asks for z or lambda warm-start we signal "no".
-        // Returning true here is correct: IPOPT will use its own defaults for
-        // the dual variables when init_z / init_lambda are false.
-        (void)init_z;
-        (void)init_lambda;
         return true;
     }
 
@@ -128,24 +130,36 @@ class IpoptTNLPAdapter : public Ipopt::TNLP {
 
     bool eval_f(Ipopt::Index n, const Ipopt::Number* x, bool /*new_x*/,
                 Ipopt::Number& obj_value) override {
-        (void)n;
-        obj_value = problem_.eval_objective(to_vector(x, n));
-        return true;
+        // n is used in to_vector; do not suppress it with (void)n.
+        try {
+            obj_value = problem_.eval_objective(to_vector(x, n));
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
     }
 
     bool eval_grad_f(Ipopt::Index n, const Ipopt::Number* x, bool /*new_x*/,
                      Ipopt::Number* grad_f) override {
-        const auto g = problem_.eval_objective_gradient(to_vector(x, n));
-        std::copy(g.begin(), g.end(), grad_f);
-        return true;
+        try {
+            const auto g = problem_.eval_objective_gradient(to_vector(x, n));
+            std::copy(g.begin(), g.end(), grad_f);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
     }
 
     bool eval_g(Ipopt::Index n, const Ipopt::Number* x, bool /*new_x*/,
                 Ipopt::Index m, Ipopt::Number* g) override {
         (void)m;
-        const auto cv = problem_.eval_constraints(to_vector(x, n));
-        std::copy(cv.begin(), cv.end(), g);
-        return true;
+        try {
+            const auto cv = problem_.eval_constraints(to_vector(x, n));
+            std::copy(cv.begin(), cv.end(), g);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
     }
 
     bool eval_jac_g(Ipopt::Index n, const Ipopt::Number* x, bool /*new_x*/,
@@ -158,20 +172,24 @@ class IpoptTNLPAdapter : public Ipopt::TNLP {
 
         const auto& pattern = problem_.constraint_jacobian_sparsity();
 
-        if (values == nullptr) {
-            // STRUCTURE pass: fill iRow/jCol from the sparsity pattern.
-            // pattern[k].first  = constraint row (0-based)
-            // pattern[k].second = variable column (0-based)
-            for (std::size_t k = 0; k < pattern.size(); ++k) {
-                iRow[k] = static_cast<Ipopt::Index>(pattern[k].first);
-                jCol[k] = static_cast<Ipopt::Index>(pattern[k].second);
+        try {
+            if (values == nullptr) {
+                // STRUCTURE pass: fill iRow/jCol from the sparsity pattern.
+                // pattern[k].first  = constraint row (0-based)
+                // pattern[k].second = variable column (0-based)
+                for (std::size_t k = 0; k < pattern.size(); ++k) {
+                    iRow[k] = static_cast<Ipopt::Index>(pattern[k].first);
+                    jCol[k] = static_cast<Ipopt::Index>(pattern[k].second);
+                }
+            } else {
+                // VALUES pass: evaluate and copy, aligned to the same pattern order.
+                const auto vals = problem_.eval_constraint_jacobian(to_vector(x, n));
+                std::copy(vals.begin(), vals.end(), values);
             }
-        } else {
-            // VALUES pass: evaluate and copy, aligned to the same pattern order.
-            const auto vals = problem_.eval_constraint_jacobian(to_vector(x, n));
-            std::copy(vals.begin(), vals.end(), values);
+            return true;
+        } catch (const std::exception&) {
+            return false;
         }
-        return true;
     }
 
     bool eval_h(Ipopt::Index n, const Ipopt::Number* x, bool /*new_x*/,
@@ -185,22 +203,26 @@ class IpoptTNLPAdapter : public Ipopt::TNLP {
 
         const auto& pattern = problem_.lagrangian_hessian_sparsity();
 
-        if (values == nullptr) {
-            // STRUCTURE pass: fill iRow/jCol from the lower-triangle Hessian pattern.
-            for (std::size_t k = 0; k < pattern.size(); ++k) {
-                iRow[k] = static_cast<Ipopt::Index>(pattern[k].first);
-                jCol[k] = static_cast<Ipopt::Index>(pattern[k].second);
+        try {
+            if (values == nullptr) {
+                // STRUCTURE pass: fill iRow/jCol from the lower-triangle Hessian pattern.
+                for (std::size_t k = 0; k < pattern.size(); ++k) {
+                    iRow[k] = static_cast<Ipopt::Index>(pattern[k].first);
+                    jCol[k] = static_cast<Ipopt::Index>(pattern[k].second);
+                }
+            } else {
+                // VALUES pass: evaluate σ·∇²f + Σλᵢ·∇²gᵢ.
+                // eval_lagrangian_hessian packs weights as [obj_factor, λ₀, ..., λ_{m-1}]
+                // and returns values aligned to lagrangian_hessian_sparsity().
+                const std::vector<double> lam = to_vector(lambda, m);
+                const auto vals = problem_.eval_lagrangian_hessian(
+                    to_vector(x, n), obj_factor, lam);
+                std::copy(vals.begin(), vals.end(), values);
             }
-        } else {
-            // VALUES pass: evaluate σ·∇²f + Σλᵢ·∇²gᵢ.
-            // eval_lagrangian_hessian packs weights as [obj_factor, λ₀, ..., λ_{m-1}]
-            // and returns values aligned to lagrangian_hessian_sparsity().
-            const std::vector<double> lam = to_vector(lambda, m);
-            const auto vals = problem_.eval_lagrangian_hessian(
-                to_vector(x, n), obj_factor, lam);
-            std::copy(vals.begin(), vals.end(), values);
+            return true;
+        } catch (const std::exception&) {
+            return false;
         }
-        return true;
     }
 
     // ------------------------------------------------------------------
