@@ -44,6 +44,15 @@ NLPProblem::NLPProblem(std::unique_ptr<ad::ADBackend> backend,
                            " has lower bound > upper bound");
         }
     }
+
+    const ad::SparsityPattern& jacobian_pattern = backend_->jacobian_sparsity();
+    for (std::size_t k = 0; k < jacobian_pattern.size(); ++k) {
+        const std::size_t row = jacobian_pattern[k].first;
+        const std::size_t col = jacobian_pattern[k].second;
+        if (row == 0) {
+            objective_gradient_slots_.emplace_back(col, k);
+        }
+    }
 }
 
 double NLPProblem::eval_objective(const std::vector<double>& x) const {
@@ -59,6 +68,18 @@ std::vector<double> NLPProblem::eval_constraints(const std::vector<double>& x) c
     }
     const std::vector<double> all_outputs = backend_->eval(x);
     return std::vector<double>(all_outputs.begin() + 1, all_outputs.end());
+}
+
+std::vector<double> NLPProblem::eval_objective_gradient(const std::vector<double>& x) const {
+    if (x.size() != num_variables_) {
+        throw NLPError("eval_objective_gradient: x.size() != num_variables");
+    }
+    const std::vector<double> jacobian_values = backend_->eval_jacobian(x);
+    std::vector<double> gradient(num_variables_, 0.0);
+    for (const auto& [col, value_index] : objective_gradient_slots_) {
+        gradient[col] = jacobian_values[value_index];
+    }
+    return gradient;
 }
 
 }  // namespace goss::nlp

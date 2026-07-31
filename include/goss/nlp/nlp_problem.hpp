@@ -2,6 +2,7 @@
 #pragma once
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 #include "goss/ad/ad_backend.hpp"
 #include "goss/ad/types.hpp"
@@ -32,6 +33,7 @@ class NLPProblem {
 
     double eval_objective(const std::vector<double>& x) const;
     std::vector<double> eval_constraints(const std::vector<double>& x) const;
+    std::vector<double> eval_objective_gradient(const std::vector<double>& x) const;
 
  private:
     std::unique_ptr<ad::ADBackend> backend_;
@@ -42,7 +44,9 @@ class NLPProblem {
     std::vector<double> constraint_lower_bounds_;
     std::vector<double> constraint_upper_bounds_;
 
-    // Precomputed index maps added in Tasks 4-5.
+    // (col, value_index) pairs for entries of the backend Jacobian whose row == 0.
+    // Used to scatter eval_jacobian()[value_index] into gradient[col].
+    std::vector<std::pair<std::size_t, std::size_t>> objective_gradient_slots_;
 };
 
 }  // namespace goss::nlp

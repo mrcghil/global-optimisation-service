@@ -30,3 +30,11 @@ TEST(NLPEval, EvalRejectsWrongXSize) {
     EXPECT_THROW(problem.eval_objective({1.0}), goss::nlp::NLPError);
     EXPECT_THROW(problem.eval_constraints({1.0, 2.0, 3.0}), goss::nlp::NLPError);
 }
+
+TEST(NLPEval, ObjectiveGradientIsDenseGradOfF) {
+    auto problem = make_quad_problem("nlp_grad");
+    auto grad = problem.eval_objective_gradient({3.0, 4.0});
+    ASSERT_EQ(grad.size(), 2u);            // dense, size num_variables
+    EXPECT_DOUBLE_EQ(grad[0], 6.0);        // d(x0^2+x1^2)/dx0 = 2*x0
+    EXPECT_DOUBLE_EQ(grad[1], 8.0);        // = 2*x1
+}
