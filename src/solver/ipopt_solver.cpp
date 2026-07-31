@@ -10,8 +10,6 @@
 // correct -I flag and -DHAVE_CSTDDEF (required by IPOPT 3.11.9 headers).
 #include <IpTNLP.hpp>
 #include <IpIpoptApplication.hpp>
-#include <IpSolveStatistics.hpp>
-
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -281,6 +279,16 @@ class IpoptTNLPAdapter : public Ipopt::TNLP {
 
 SolverResult IpoptSolver::solve(const nlp::NLPProblem& problem,
                                 const std::vector<double>& initial_guess) {
+    // Validate initial_guess size before doing anything else — a mismatch would
+    // silently overflow the IPOPT-allocated Number[n] buffer in get_starting_point.
+    if (initial_guess.size() != problem.num_variables()) {
+        throw SolverError(
+            "IpoptSolver::solve: initial_guess size (" +
+            std::to_string(initial_guess.size()) +
+            ") does not match problem.num_variables() (" +
+            std::to_string(problem.num_variables()) + ")");
+    }
+
     SolverResult result;
     result.status = SolverStatus::Failure;
 
@@ -327,6 +335,15 @@ SolverResult IpoptSolver::solve(const nlp::NLPProblem& problem,
             result.message = "IPOPT returned hard error code " +
                              std::to_string(static_cast<int>(opt_status));
         }
+    }
+
+    // Fallback: if we ended up in a Failure state without any message
+    // (e.g. an unmapped terminal code where finalize_solution was called but
+    // didn't set a human-readable text), populate a numeric description so
+    // callers always have context on failure.
+    if (result.status == SolverStatus::Failure && result.message.empty()) {
+        result.message = "IPOPT terminated with application return status " +
+                         std::to_string(static_cast<int>(opt_status));
     }
 
     return result;

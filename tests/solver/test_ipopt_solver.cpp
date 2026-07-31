@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include "goss/solver/ipopt_solver.hpp"
+#include "goss/solver/errors.hpp"
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/ad/cppadcg_backend.hpp"
 #include "solver/hs_fixtures.hpp"
@@ -89,6 +90,14 @@ TEST(IpoptSolver, SolvesHS28) {
     auto result = solver.solve(problem, {-4.0, 1.0, 1.0});
     ASSERT_EQ(result.status, goss::solver::SolverStatus::Success);
     EXPECT_NEAR(result.objective_value, 0.0, 1e-6);
+}
+
+/// Guard: initial_guess size mismatch must throw SolverError before IPOPT
+/// even starts, preventing a buffer overflow in get_starting_point.
+TEST(IpoptSolver, RejectsWrongInitialGuessSize) {
+    auto problem = make_eq_qp("ipopt_badx0");  // 2-variable problem
+    goss::solver::IpoptSolver solver;
+    EXPECT_THROW(solver.solve(problem, {1.0, 2.0, 3.0}), goss::solver::SolverError);
 }
 
 /// HS35: inequality-only QP.
