@@ -15,7 +15,7 @@ enable_testing()
 add_library(goss_ad INTERFACE)
 target_include_directories(goss_ad INTERFACE ${CMAKE_SOURCE_DIR}/include)
 
-add_executable(goss_ad_tests tests/ad/test_smoke.cpp tests/ad/test_fixtures.cpp)
+add_executable(goss_ad_tests tests/ad/test_smoke.cpp tests/ad/test_fixtures.cpp tests/ad/test_verification.cpp)
 target_link_libraries(goss_ad_tests PRIVATE goss_ad GTest::gtest_main)
 target_include_directories(goss_ad_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 include(GoogleTest)
