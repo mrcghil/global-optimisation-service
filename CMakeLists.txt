@@ -127,7 +127,8 @@ target_link_libraries(goss_transcription PUBLIC goss_nlp goss_ad
   PRIVATE goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
 
 add_executable(goss_transcription_tests
-  tests/transcription/test_variable_layout.cpp)
+  tests/transcription/test_variable_layout.cpp
+  tests/transcription/test_trapezoidal.cpp)
 target_include_directories(goss_transcription_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_transcription_tests PRIVATE
