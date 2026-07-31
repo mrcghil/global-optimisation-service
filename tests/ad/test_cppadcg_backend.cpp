@@ -39,3 +39,26 @@ TEST(CppADCGBackend, BandedJacobianSparsityIsTridiagonal) {
             << "unexpected nonzero at (" << row << "," << col << ")";
     }
 }
+
+TEST(CppADCGBackend, QuadraticHessianIsIdentity) {
+    goss::ad::test::Quadratic f{3};
+    goss::ad::CppADCGBackend backend(f, f.input_size(), "quad_hess");
+    std::vector<double> x{1.0, 2.0, 3.0};
+    std::vector<double> weights{1.0};  // single output
+    auto pattern = backend.hessian_sparsity();
+    auto values = backend.eval_hessian(x, weights);
+    ASSERT_EQ(pattern.size(), values.size());
+    // Hessian of 0.5 xᵀx is I: diagonal entries = 1, off-diagonal = 0 (absent)
+    for (std::size_t k = 0; k < pattern.size(); ++k) {
+        auto [row, col] = pattern[k];
+        EXPECT_DOUBLE_EQ(values[k], row == col ? 1.0 : 0.0);
+    }
+}
+
+TEST(CppADCGBackend, HessianSparsityIsLowerTriangle) {
+    goss::ad::test::Quadratic f{4};
+    goss::ad::CppADCGBackend backend(f, f.input_size(), "quad_hess_tri");
+    for (auto [row, col] : backend.hessian_sparsity()) {
+        EXPECT_GE(row, col) << "hessian should be lower triangular";
+    }
+}

@@ -51,6 +51,13 @@ CompiledModel compile_and_load(CppAD::ADFun<CGScalar>& fun,
         // (equations) and column (variables) indices for all non-zero entries.
         result.model->JacobianSparsity(result.jac_rows, result.jac_cols);
 
+        // Capture the full symmetric Hessian sparsity pattern once at
+        // construction.  HessianSparsity(rows, cols) fills parallel arrays for
+        // all non-zero entries of the full (symmetric) Hessian.
+        // CppADCodeGen returns the full pattern here — lower-triangle filtering
+        // is applied in the CppADCGBackend constructor.
+        result.model->HessianSparsity(result.hess_rows, result.hess_cols);
+
         return result;
 
     } catch (const CppAD::cg::CGException& error) {
