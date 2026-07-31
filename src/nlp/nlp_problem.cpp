@@ -46,4 +46,19 @@ NLPProblem::NLPProblem(std::unique_ptr<ad::ADBackend> backend,
     }
 }
 
+double NLPProblem::eval_objective(const std::vector<double>& x) const {
+    if (x.size() != num_variables_) {
+        throw NLPError("eval_objective: x.size() != num_variables");
+    }
+    return backend_->eval(x)[0];
+}
+
+std::vector<double> NLPProblem::eval_constraints(const std::vector<double>& x) const {
+    if (x.size() != num_variables_) {
+        throw NLPError("eval_constraints: x.size() != num_variables");
+    }
+    const std::vector<double> all_outputs = backend_->eval(x);
+    return std::vector<double>(all_outputs.begin() + 1, all_outputs.end());
+}
+
 }  // namespace goss::nlp

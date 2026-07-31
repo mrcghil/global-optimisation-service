@@ -30,7 +30,8 @@ class NLPProblem {
     const std::vector<double>& constraint_lower_bounds() const { return constraint_lower_bounds_; }
     const std::vector<double>& constraint_upper_bounds() const { return constraint_upper_bounds_; }
 
-    // Evaluation methods added in Tasks 3-6.
+    double eval_objective(const std::vector<double>& x) const;
+    std::vector<double> eval_constraints(const std::vector<double>& x) const;
 
  private:
     std::unique_ptr<ad::ADBackend> backend_;
