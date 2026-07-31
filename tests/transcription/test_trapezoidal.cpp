@@ -32,3 +32,16 @@ TEST(Trapezoidal, PinsInitialState) {
     EXPECT_DOUBLE_EQ(compiled.problem->variable_lower_bounds()[idx], 2.0);
     EXPECT_DOUBLE_EQ(compiled.problem->variable_upper_bounds()[idx], 2.0);
 }
+
+// Regression: the boundary-pin guard must be per-index (i < size()), not just
+// !empty(). When final_state_fixed[0] == 0.0, the final state must NOT be pinned
+// (bounds stay wide), even though the vector is non-empty.
+TEST(Trapezoidal, FinalStateFreeWhenNotFixed) {
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 20);
+    auto compiled = goss::transcription::Trapezoidal::compile(ocp, "trap_freefinal");
+    std::size_t last = compiled.layout.num_nodes() - 1;
+    std::size_t idx = compiled.layout.state_index(last, 0);
+    // final_state_fixed[0] == 0.0 → not pinned → lower < upper
+    EXPECT_LT(compiled.problem->variable_lower_bounds()[idx],
+              compiled.problem->variable_upper_bounds()[idx]);
+}

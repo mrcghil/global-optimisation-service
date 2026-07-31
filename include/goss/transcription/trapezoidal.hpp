@@ -90,12 +90,15 @@ struct Trapezoidal {
             }
         }
         // Pin fixed boundary states via equal bounds (simplest approach: fixed variable).
+        // Guard with i < size() so a caller passing a shorter-than-ns fixed vector cannot
+        // trigger out-of-bounds access (UB). The contract is that when a pin fires the
+        // corresponding initial_state / final_state entry is also valid (same size).
         for (std::size_t i = 0; i < ns; ++i) {
-            if (!ocp.initial_state_fixed.empty() && ocp.initial_state_fixed[i] != 0.0) {
+            if (i < ocp.initial_state_fixed.size() && ocp.initial_state_fixed[i] != 0.0) {
                 std::size_t idx = layout.state_index(0, i);
                 zl[idx] = zu[idx] = ocp.initial_state[i];
             }
-            if (!ocp.final_state_fixed.empty() && ocp.final_state_fixed[i] != 0.0) {
+            if (i < ocp.final_state_fixed.size() && ocp.final_state_fixed[i] != 0.0) {
                 std::size_t idx = layout.state_index(nn - 1, i);
                 zl[idx] = zu[idx] = ocp.final_state[i];
             }
