@@ -1,6 +1,9 @@
 // include/goss/sim/trajectory.hpp
 #pragma once
 #include <cstddef>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "goss/model/model.hpp"
@@ -63,6 +66,35 @@ inline Trajectory extract_trajectory(const solver::SolverResult& result,
             traj.controls[j][k] = result.x[layout.control_index(k, j)];
     }
     return traj;
+}
+
+/// Returns the trajectory as CSV text.
+/// Header: time,<state_names...>,<control_names...>
+/// One row per node: node time followed by each series value at that node.
+/// Rows are comma-separated and newline-terminated.
+/// Full double precision (setprecision(17), default float format).
+inline std::string to_csv(const Trajectory& traj) {
+    std::ostringstream out;
+    out << std::setprecision(17);
+    out << "time";
+    for (const auto& name : traj.state_names) out << "," << name;
+    for (const auto& name : traj.control_names) out << "," << name;
+    out << "\n";
+    for (std::size_t k = 0; k < traj.times.size(); ++k) {
+        out << traj.times[k];
+        for (const auto& series : traj.states) out << "," << series[k];
+        for (const auto& series : traj.controls) out << "," << series[k];
+        out << "\n";
+    }
+    return out.str();
+}
+
+/// Writes to_csv output to the file at path.
+/// Throws SimError if the file cannot be opened.
+inline void write_csv(const Trajectory& traj, const std::string& path) {
+    std::ofstream file(path);
+    if (!file) throw SimError("write_csv: cannot open '" + path + "' for writing");
+    file << to_csv(traj);
 }
 
 }  // namespace goss::sim

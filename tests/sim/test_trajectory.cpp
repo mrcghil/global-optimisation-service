@@ -1,5 +1,7 @@
 // tests/sim/test_trajectory.cpp
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <string>
 #include "goss/sim/trajectory.hpp"
 #include "goss/model/model.hpp"
 #include "goss/transcription/variable_layout.hpp"
@@ -54,4 +56,25 @@ TEST(Trajectory, StateLookupUnknownNameThrows) {
     result.x.assign(layout.total_variables(), 0.0);
     auto traj = goss::sim::extract_trajectory(result, layout, model, mesh);
     EXPECT_THROW(traj.state("nonexistent"), goss::sim::SimError);
+}
+
+TEST(TrajectoryCsv, HeaderAndRowsMatchSeries) {
+    auto model = two_state_model();
+    goss::transcription::VariableLayout layout(2, 1, 3);
+    goss::transcription::Mesh mesh{0.0, 2.0, 2};
+    goss::solver::SolverResult result;
+    result.x.assign(layout.total_variables(), 0.0);
+    for (std::size_t k = 0; k < 3; ++k) {
+        result.x[layout.state_index(k, 0)] = static_cast<double>(k);       // pos
+        result.x[layout.state_index(k, 1)] = 10.0 + k;                     // vel
+        result.x[layout.control_index(k, 0)] = 100.0 + k;                  // thrust
+    }
+    auto traj = goss::sim::extract_trajectory(result, layout, model, mesh);
+    std::string csv = goss::sim::to_csv(traj);
+    // header first
+    EXPECT_EQ(csv.find("time,pos,vel,thrust\n"), 0u);
+    // row for node 1: time=1, pos=1, vel=11, thrust=101
+    EXPECT_NE(csv.find("\n1,1,11,101\n"), std::string::npos);
+    // 1 header + 3 data rows = 4 newlines
+    EXPECT_EQ(std::count(csv.begin(), csv.end(), '\n'), 4);
 }
