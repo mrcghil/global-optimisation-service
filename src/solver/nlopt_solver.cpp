@@ -4,9 +4,12 @@
 // All NLopt types are confined to this translation unit.  The public header
 // (nlopt_solver.hpp) exposes only standard-library and project types.
 //
-// This task handles objective evaluation, variable bounds, and result/status
-// mapping for bound-only problems (m=0).  General constraint handling is
-// added in Task 6.
+// Handles objective evaluation, variable bounds, result/status mapping, and
+// general two-sided constraint handling via NLopt m-constraint callbacks.
+// Two-sided constraints gL <= g(x) <= gU are decomposed into:
+//   - Equality rows (gL == gU): add_equality_mconstraint, result = g - gL.
+//   - Inequality rows (finite upper bound gU): result = g - gU <= 0.
+//   - Inequality rows (finite lower bound gL): result = gL - g <= 0.
 //
 // NLopt 2.7.1 C++ header is <nlopt.hpp>; the goss_nlopt_iface INTERFACE
 // target (Task 1) propagates the correct -I flag automatically.
@@ -39,13 +42,84 @@ struct ObjectiveData {
 
 /// NLopt objective callback.
 /// COBYLA never supplies gradient information (grad is empty); leave it
-/// untouched.  Any exception from eval_objective propagates up to the
-/// try/catch in solve(), which translates it to a SolverStatus.
+/// untouched.  Exceptions thrown here are caught by NLopt's callback wrapper
+/// and re-thrown from optimize(), where solve()'s catch chain handles them.
 double objective_callback(const std::vector<double>& x,
                           std::vector<double>& /*grad*/,
                           void* data) {
     const auto* d = static_cast<const ObjectiveData*>(data);
     return d->problem->eval_objective(x);
+}
+
+/// One entry in the stacked inequality m-constraint.
+/// For an upper bound gU (g(x) <= gU): sign = +1, target = gU.
+///   NLopt feasibility: result = g - gU <= 0.
+/// For a lower bound gL (g(x) >= gL): sign = -1, target = gL.
+///   NLopt feasibility: result = gL - g = -(g - gL) <= 0.
+struct InequalityEntry {
+    std::size_t row;    ///< Index into eval_constraints output vector.
+    int         sign;   ///< +1 for upper bound, -1 for lower bound.
+    double      target; ///< The bound value (gU or gL).
+};
+
+/// One entry in the stacked equality m-constraint.
+struct EqualityEntry {
+    std::size_t row;    ///< Index into eval_constraints output vector.
+    double      target; ///< The equality target (gL == gU).
+};
+
+/// Data passed via void* to both constraint callbacks.
+/// Lifetime must span the entire optimize() call — declare as a local in
+/// solve() just before optimize() is invoked.
+struct ConstraintData {
+    const nlp::NLPProblem*      problem;
+    std::vector<InequalityEntry> ineq_entries;
+    std::vector<EqualityEntry>   eq_entries;
+};
+
+/// NLopt inequality m-constraint callback.
+/// result[k] <= 0 means feasible for NLopt.
+/// For an upper-bound entry (sign=+1, target=gU): result[k] = g[row] - gU.
+/// For a lower-bound entry (sign=-1, target=gL): result[k] = gL - g[row].
+/// Exceptions are caught by NLopt's callback wrapper and re-thrown from
+/// optimize(), where solve()'s catch chain handles them.
+void inequality_mconstraint(unsigned m, double* result,
+                            unsigned /*n*/, const double* x,
+                            double* /*grad*/, void* data) {
+    const auto* d = static_cast<const ConstraintData*>(data);
+    const std::size_t n_vars = d->problem->num_variables();
+    const std::vector<double> x_vec(x, x + n_vars);
+    const std::vector<double> g = d->problem->eval_constraints(x_vec);
+
+    for (unsigned k = 0; k < m; ++k) {
+        const auto& e = d->ineq_entries[k];
+        if (e.sign == 1) {
+            // Upper bound: g[row] - gU <= 0
+            result[k] = g[e.row] - e.target;
+        } else {
+            // Lower bound: gL - g[row] <= 0
+            result[k] = e.target - g[e.row];
+        }
+    }
+}
+
+/// NLopt equality m-constraint callback.
+/// result[j] == 0 means feasible for NLopt.
+/// For an equality entry (gL == gU): result[j] = g[row] - target.
+/// Exceptions are caught by NLopt's callback wrapper and re-thrown from
+/// optimize(), where solve()'s catch chain handles them.
+void equality_mconstraint(unsigned m, double* result,
+                          unsigned /*n*/, const double* x,
+                          double* /*grad*/, void* data) {
+    const auto* d = static_cast<const ConstraintData*>(data);
+    const std::size_t n_vars = d->problem->num_variables();
+    const std::vector<double> x_vec(x, x + n_vars);
+    const std::vector<double> g = d->problem->eval_constraints(x_vec);
+
+    for (unsigned j = 0; j < m; ++j) {
+        const auto& e = d->eq_entries[j];
+        result[j] = g[e.row] - e.target;
+    }
 }
 
 /// Replace ±2e19 sentinel values (used by NLPProblem for "free" bounds)
@@ -151,6 +225,51 @@ SolverResult NloptSolver::solve(const nlp::NLPProblem& problem,
     // out of scope before optimize() returns.
     ObjectiveData data{&problem};
     optimizer.set_min_objective(&objective_callback, &data);
+
+    // ------------------------------------------------------------------
+    // Constraint decomposition: build inequality and equality index lists.
+    // Threshold for treating a bound as "infinite" (matches kInf sentinel).
+    // ------------------------------------------------------------------
+    constexpr double kBoundInfThreshold = 1e19;
+
+    ConstraintData cdata{&problem, {}, {}};
+
+    const auto& g_lb = problem.constraint_lower_bounds();
+    const auto& g_ub = problem.constraint_upper_bounds();
+    const std::size_t m_constraints = g_lb.size();
+
+    for (std::size_t i = 0; i < m_constraints; ++i) {
+        const double gL = g_lb[i];
+        const double gU = g_ub[i];
+
+        // Equality row: both bounds are the same finite value.
+        if (gL == gU) {
+            cdata.eq_entries.push_back({i, gL});
+        } else {
+            // Upper bound finite → g_i(x) <= gU: result = g - gU <= 0.
+            if (gU < kBoundInfThreshold) {
+                cdata.ineq_entries.push_back({i, +1, gU});
+            }
+            // Lower bound finite → g_i(x) >= gL: result = gL - g <= 0.
+            if (gL > -kBoundInfThreshold) {
+                cdata.ineq_entries.push_back({i, -1, gL});
+            }
+        }
+    }
+
+    // Register inequality m-constraint only when there are entries.
+    if (!cdata.ineq_entries.empty()) {
+        const std::vector<double> ineq_tol(cdata.ineq_entries.size(), 1e-8);
+        optimizer.add_inequality_mconstraint(
+            &inequality_mconstraint, &cdata, ineq_tol);
+    }
+
+    // Register equality m-constraint only when there are entries.
+    if (!cdata.eq_entries.empty()) {
+        const std::vector<double> eq_tol(cdata.eq_entries.size(), 1e-8);
+        optimizer.add_equality_mconstraint(
+            &equality_mconstraint, &cdata, eq_tol);
+    }
 
     optimizer.set_xtol_rel(xtol_rel_);
     optimizer.set_maxeval(max_evaluations_);
