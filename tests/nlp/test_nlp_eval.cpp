@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <memory>
 #include "goss/nlp/nlp_problem.hpp"
@@ -37,4 +38,24 @@ TEST(NLPEval, ObjectiveGradientIsDenseGradOfF) {
     ASSERT_EQ(grad.size(), 2u);            // dense, size num_variables
     EXPECT_DOUBLE_EQ(grad[0], 6.0);        // d(x0^2+x1^2)/dx0 = 2*x0
     EXPECT_DOUBLE_EQ(grad[1], 8.0);        // = 2*x1
+}
+
+TEST(NLPEval, ConstraintJacobianValuesAndPatternAlign) {
+    auto problem = make_quad_problem("nlp_cjac");
+    const auto& pattern = problem.constraint_jacobian_sparsity();
+    auto values = problem.eval_constraint_jacobian({3.0, 4.0});
+    ASSERT_EQ(pattern.size(), values.size());
+    // constraint 0 = x0 + x1 - 1, gradient (1, 1); both entries are constraint row 0
+    for (std::size_t k = 0; k < pattern.size(); ++k) {
+        EXPECT_EQ(pattern[k].first, 0u) << "constraint index must be 0";
+        EXPECT_DOUBLE_EQ(values[k], 1.0);
+    }
+    EXPECT_EQ(pattern.size(), 2u);  // d/dx0 and d/dx1
+}
+
+TEST(NLPEval, ConstraintJacobianNeverReferencesObjectiveRow) {
+    auto problem = make_quad_problem("nlp_cjac2");
+    for (const auto& [constraint_index, col] : problem.constraint_jacobian_sparsity()) {
+        EXPECT_LT(constraint_index, problem.num_constraints());
+    }
 }

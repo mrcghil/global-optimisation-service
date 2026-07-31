@@ -35,6 +35,13 @@ class NLPProblem {
     std::vector<double> eval_constraints(const std::vector<double>& x) const;
     std::vector<double> eval_objective_gradient(const std::vector<double>& x) const;
 
+    /// Returns the re-indexed constraint Jacobian sparsity pattern.
+    /// Each entry (constraint_index, col) corresponds to a backend Jacobian row >= 1,
+    /// re-indexed as constraint_index = backend_row - 1.  Aligned to eval_constraint_jacobian.
+    const ad::SparsityPattern& constraint_jacobian_sparsity() const { return constraint_jacobian_sparsity_; }
+
+    std::vector<double> eval_constraint_jacobian(const std::vector<double>& x) const;
+
  private:
     std::unique_ptr<ad::ADBackend> backend_;
     std::size_t num_variables_;
@@ -44,9 +51,17 @@ class NLPProblem {
     std::vector<double> constraint_lower_bounds_;
     std::vector<double> constraint_upper_bounds_;
 
+    // Precomputed index maps added in Tasks 4-5.
+
     // (col, value_index) pairs for entries of the backend Jacobian whose row == 0.
     // Used to scatter eval_jacobian()[value_index] into gradient[col].
     std::vector<std::pair<std::size_t, std::size_t>> objective_gradient_slots_;
+
+    // Re-indexed constraint Jacobian sparsity: (constraint_index, col) where constraint_index = backend_row - 1.
+    ad::SparsityPattern constraint_jacobian_sparsity_;
+
+    // Maps each entry of constraint_jacobian_sparsity_ to its backend value_index k.
+    std::vector<std::size_t> constraint_jacobian_slots_;
 };
 
 }  // namespace goss::nlp
