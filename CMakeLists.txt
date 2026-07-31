@@ -109,7 +109,8 @@ add_executable(goss_solver_tests
   tests/solver/test_solver_link.cpp
   tests/solver/test_solver_interface.cpp
   tests/solver/test_ipopt_solver.cpp
-  tests/solver/test_nlopt_solver.cpp)
+  tests/solver/test_nlopt_solver.cpp
+  tests/solver/test_solver_agreement.cpp)
 target_include_directories(goss_solver_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_solver_tests PRIVATE
   goss_solver goss_ipopt_iface goss_nlopt_iface
