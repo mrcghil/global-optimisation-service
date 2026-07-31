@@ -62,3 +62,11 @@ TEST(CppADCGBackend, HessianSparsityIsLowerTriangle) {
         EXPECT_GE(row, col) << "hessian should be lower triangular";
     }
 }
+
+TEST(CppADCGBackend, EvalHessianRejectsWrongWeightsSize) {
+    // Quadratic{3} has output_size == 1; passing 2 weights must throw ADError.
+    goss::ad::test::Quadratic f{3};
+    goss::ad::CppADCGBackend backend(f, f.input_size(), "quad_hess_weights_err");
+    EXPECT_THROW(backend.eval_hessian({1.0, 2.0, 3.0}, {1.0, 2.0}),
+                 goss::ad::ADError);
+}

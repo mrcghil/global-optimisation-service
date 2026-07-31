@@ -4,7 +4,6 @@
 // Task 6 confirmed <cppad/cg.hpp> is the correct include path.
 #include <cppad/cg.hpp>
 #include <algorithm>
-#include <cassert>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -242,8 +241,13 @@ class CppADCGBackend : public ADBackend {
         std::vector<std::size_t> raw_rows, raw_cols;
         compiled_.model->SparseJacobian(x, raw_values, raw_rows, raw_cols);
 
-        assert(raw_values.size() == jac_perm_.size() &&
-               "SparseJacobian returned unexpected number of entries");
+        if (raw_values.size() != jac_perm_.size()) {
+            throw ADError(
+                "eval_jacobian: SparseJacobian returned " +
+                std::to_string(raw_values.size()) +
+                " values, expected " +
+                std::to_string(jac_perm_.size()));
+        }
 
         // Apply precomputed permutation: aligned[k] = raw[jac_perm_[k]]
         const std::size_t nnz = jac_perm_.size();
@@ -284,8 +288,13 @@ class CppADCGBackend : public ADBackend {
         compiled_.model->SparseHessian(x, weights, raw_values,
                                        raw_rows, raw_cols);
 
-        assert(raw_values.size() == compiled_.hess_rows.size() &&
-               "SparseHessian returned unexpected number of entries");
+        if (raw_values.size() != compiled_.hess_rows.size()) {
+            throw ADError(
+                "eval_hessian: SparseHessian returned " +
+                std::to_string(raw_values.size()) +
+                " values, expected " +
+                std::to_string(compiled_.hess_rows.size()));
+        }
 
         // Apply precomputed permutation: aligned[k] = raw[hess_perm_[k]]
         const std::size_t hess_lower_nnz = hess_perm_.size();
