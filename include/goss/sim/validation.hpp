@@ -23,6 +23,12 @@ double validate_by_integration(const transcription::OcpProblem<DynamicsFn, CostF
                                const transcription::VariableLayout& layout) {
     if (result.x.size() != layout.total_variables())
         throw SimError("validate_by_integration: result.x size != layout.total_variables");
+    if (ocp.num_states != layout.num_states())
+        throw SimError("validate_by_integration: ocp.num_states != layout.num_states");
+    if (ocp.num_controls != layout.num_controls())
+        throw SimError("validate_by_integration: ocp.num_controls != layout.num_controls");
+    if (ocp.mesh.num_nodes() != layout.num_nodes())
+        throw SimError("validate_by_integration: ocp.mesh.num_nodes != layout.num_nodes");
 
     const std::size_t ns = layout.num_states();
     const std::size_t nc = layout.num_controls();

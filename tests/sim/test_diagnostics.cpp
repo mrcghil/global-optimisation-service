@@ -46,3 +46,15 @@ TEST(Diagnostics, SuccessAndGoodIntegrationStaysOk) {
     auto d = goss::sim::diagnose(with_status(goss::solver::SolverStatus::Success), /*err=*/1e-6, /*tol=*/1e-3);
     EXPECT_TRUE(d.ok);
 }
+
+TEST(Diagnostics, NonSuccessIgnoresBadIntegration) {
+    auto d = goss::sim::diagnose(with_status(goss::solver::SolverStatus::InfeasibleProblem), 999.0, 1e-3);
+    EXPECT_FALSE(d.ok);
+    EXPECT_NE(d.summary.find("infeasible"), std::string::npos);
+}
+
+TEST(Diagnostics, NumericalErrorGivesAdvice) {
+    auto d = goss::sim::diagnose(with_status(goss::solver::SolverStatus::NumericalError));
+    EXPECT_FALSE(d.ok);
+    EXPECT_FALSE(d.advice.empty());
+}

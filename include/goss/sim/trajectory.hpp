@@ -95,6 +95,7 @@ inline void write_csv(const Trajectory& traj, const std::string& path) {
     std::ofstream file(path);
     if (!file) throw SimError("write_csv: cannot open '" + path + "' for writing");
     file << to_csv(traj);
+    if (!file) throw SimError("write_csv: write failed for '" + path + "'");
 }
 
 }  // namespace goss::sim

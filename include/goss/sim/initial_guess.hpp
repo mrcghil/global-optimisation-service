@@ -5,6 +5,7 @@
 #include <vector>
 #include "goss/model/model.hpp"
 #include "goss/sim/errors.hpp"
+#include "goss/transcription/transcription.hpp"
 #include "goss/transcription/variable_layout.hpp"
 
 namespace goss::sim {
@@ -39,7 +40,7 @@ inline std::vector<double> linear_guess(const model::Model& model,
     for (std::size_t j = 0; j < layout.num_controls(); ++j) {
         const double lo = model.control_lower(j);
         const double hi = model.control_upper(j);
-        const bool finite = std::abs(lo) < 1e19 && std::abs(hi) < 1e19;
+        const bool finite = std::abs(lo) < transcription::kInf && std::abs(hi) < transcription::kInf;
         const double value = finite ? 0.5 * (lo + hi) : 0.0;
         for (std::size_t k = 0; k < num_nodes; ++k)
             z0[layout.control_index(k, j)] = value;
