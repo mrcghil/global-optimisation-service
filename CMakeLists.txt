@@ -82,16 +82,23 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(IPOPT REQUIRED ipopt)
 pkg_check_modules(NLOPT REQUIRED nlopt)
 
+# Reusable INTERFACE targets so every consumer (tests now, goss_solver in the
+# solver layer) inherits the correct include dirs, -DHAVE_CSTDDEF, and link
+# flags without duplication. IPOPT 3.11.9 headers #error without HAVE_CSTDDEF.
+add_library(goss_ipopt_iface INTERFACE)
+target_include_directories(goss_ipopt_iface INTERFACE ${IPOPT_INCLUDE_DIRS})
+target_compile_options(goss_ipopt_iface INTERFACE ${IPOPT_CFLAGS_OTHER})
+target_link_libraries(goss_ipopt_iface INTERFACE ${IPOPT_LIBRARIES})
+target_link_directories(goss_ipopt_iface INTERFACE ${IPOPT_LIBRARY_DIRS})
+
+add_library(goss_nlopt_iface INTERFACE)
+target_include_directories(goss_nlopt_iface INTERFACE ${NLOPT_INCLUDE_DIRS})
+target_compile_options(goss_nlopt_iface INTERFACE ${NLOPT_CFLAGS_OTHER})
+target_link_libraries(goss_nlopt_iface INTERFACE ${NLOPT_LIBRARIES})
+target_link_directories(goss_nlopt_iface INTERFACE ${NLOPT_LIBRARY_DIRS})
+
 add_executable(goss_solver_tests
   tests/solver/test_solver_link.cpp)
-target_include_directories(goss_solver_tests PRIVATE
-  ${CMAKE_SOURCE_DIR}/tests ${IPOPT_INCLUDE_DIRS} ${NLOPT_INCLUDE_DIRS})
-# IPOPT 3.11.9 pkg-config emits -DHAVE_CSTDDEF alongside the -I flag;
-# CFLAGS_OTHER captures that token so the IPOPT headers compile correctly.
-target_compile_options(goss_solver_tests PRIVATE
-  ${IPOPT_CFLAGS_OTHER} ${NLOPT_CFLAGS_OTHER})
-target_link_libraries(goss_solver_tests PRIVATE
-  ${IPOPT_LIBRARIES} ${NLOPT_LIBRARIES} GTest::gtest_main)
-target_link_directories(goss_solver_tests PRIVATE
-  ${IPOPT_LIBRARY_DIRS} ${NLOPT_LIBRARY_DIRS})
+target_include_directories(goss_solver_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_solver_tests PRIVATE goss_ipopt_iface goss_nlopt_iface GTest::gtest_main)
 gtest_discover_tests(goss_solver_tests)
