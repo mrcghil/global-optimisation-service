@@ -98,6 +98,4 @@ inline auto make_fast_decay(double x0, double tf, std::size_t intervals) {
     return ocp;
 }
 
-inline double fast_decay_solution(double x0, double t) { return x0 * std::exp(-10.0 * t); }
-
 }  // namespace goss::transcription::test
