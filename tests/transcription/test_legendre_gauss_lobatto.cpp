@@ -3,6 +3,7 @@
 #include <cmath>
 #include <vector>
 #include "goss/transcription/errors.hpp"
+#include "goss/transcription/hermite_simpson.hpp"
 #include "goss/transcription/legendre_gauss_lobatto.hpp"
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
@@ -76,4 +77,95 @@ TEST(LegendreGaussLobatto, SolvesHarmonicOscillator) {
     std::size_t last = compiled.layout.num_nodes() - 1;
     double x0_final = result.x[compiled.layout.state_index(last, 0)];
     EXPECT_NEAR(x0_final, goss::transcription::test::harmonic_x0_solution(1.0, 0.0, tf), 1e-7);
+}
+
+namespace {
+// Solve exp-decay with n LGL nodes; return max nodal error vs analytic solution.
+double lgl_max_error(std::size_t num_nodes) {
+    const double x0 = 1.0, tf = 1.0;
+    // num_intervals = num_nodes - 1 so that mesh.num_nodes() == num_nodes
+    auto ocp = goss::transcription::test::make_exponential_decay(
+        x0, tf, /*intervals=*/num_nodes - 1);
+    auto compiled = goss::transcription::LegendreGaussLobatto::compile(
+        ocp, "lgl_conv_" + std::to_string(num_nodes));
+    goss::solver::IpoptSolver solver;
+    solver.set_tolerance(1e-13);  // solver tolerance well below spectral accuracy
+    std::vector<double> z0(compiled.problem->num_variables(), x0);
+    auto result = solver.solve(*compiled.problem, z0);
+    if (result.status != goss::solver::SolverStatus::Success) return 1e9;
+
+    const auto& layout = compiled.layout;
+    // Pre-compute LGL node times to compare at each node.
+    std::vector<double> lgl_xi, lgl_weights;
+    goss::transcription::lgl_nodes_and_weights(num_nodes, lgl_xi, lgl_weights);
+    const double half_dur = 0.5 * tf;
+    double max_err = 0.0;
+    for (std::size_t k = 0; k < num_nodes; ++k) {
+        const double t_k = 0.0 + half_dur * (lgl_xi[k] + 1.0);
+        const double xk  = result.x[layout.state_index(k, 0)];
+        const double exact = goss::transcription::test::exp_decay_solution(x0, t_k);
+        max_err = std::max(max_err, std::abs(xk - exact));
+    }
+    return max_err;
+}
+}  // namespace
+
+TEST(LegendreGaussLobatto, ConvergesSpectrally) {
+    // Errors at n=3,5,7,9,11 LGL nodes on smooth exp(-t).
+    const std::vector<std::size_t> node_counts = {3, 5, 7, 9, 11};
+    std::vector<double> errors;
+    for (std::size_t n : node_counts) errors.push_back(lgl_max_error(n));
+
+    // Errors must decrease monotonically.
+    for (std::size_t i = 0; i + 1 < errors.size(); ++i)
+        ASSERT_LT(errors[i + 1], errors[i])
+            << "LGL error must decrease as n increases";
+
+    // Spectral convergence check: the convergence rate (ratio of log errors)
+    // must be much steeper than O(h^4) = O(n^{-4}).
+    // For O(h^4): halving h (doubling nodes) reduces error by 16x -> ratio ~4 per doubling.
+    // For spectral: ratio should be >>4, e.g. >6 for n=3->5->7.
+    // Check the ratio log(e[i])/log(e[i+1]) > 4 for consecutive pairs.
+    // Use 3->7 (skip by 2) for a cleaner ratio.
+    const double log_ratio_3_to_7 =
+        std::log(errors[0] / errors[2]) / std::log(static_cast<double>(node_counts[2]) /
+                                                   static_cast<double>(node_counts[0]));
+    EXPECT_GT(log_ratio_3_to_7, 4.0)
+        << "LGL spectral convergence should exceed O(h^4); "
+           "observed log-ratio: " << log_ratio_3_to_7;
+
+    // Hard accuracy check: 11 LGL nodes must achieve < 1e-10 on smooth exp(-t).
+    EXPECT_LT(errors.back(), 1e-10)
+        << "11 LGL nodes should achieve near-machine precision on smooth exp(-t)";
+}
+
+TEST(LegendreGaussLobatto, SameNodeCountOutperformsHermiteSimpson) {
+    // With n=9 LGL nodes vs 9 HS nodes (8 intervals), LGL should win on smooth problem.
+    const std::size_t n_nodes = 9;
+    const double x0 = 1.0, tf = 1.0;
+
+    // LGL: 9 nodes
+    double lgl_err = lgl_max_error(n_nodes);
+
+    // Hermite-Simpson: 9 nodes = 8 intervals, error measured at node times.
+    auto hs_ocp = goss::transcription::test::make_exponential_decay(x0, tf, n_nodes - 1);
+    auto hs_compiled = goss::transcription::HermiteSimpson::compile(
+        hs_ocp, "lgl_vs_hs_compare");
+    goss::solver::IpoptSolver solver;
+    solver.set_tolerance(1e-13);
+    std::vector<double> z0(hs_compiled.problem->num_variables(), x0);
+    auto hs_result = solver.solve(*hs_compiled.problem, z0);
+    ASSERT_EQ(hs_result.status, goss::solver::SolverStatus::Success);
+    const auto& hs_layout = hs_compiled.layout;
+    const double h = tf / static_cast<double>(n_nodes - 1);
+    double hs_err = 0.0;
+    for (std::size_t k = 0; k < n_nodes; ++k) {
+        double xk = hs_result.x[hs_layout.state_index(k, 0)];
+        double exact = goss::transcription::test::exp_decay_solution(x0, k * h);
+        hs_err = std::max(hs_err, std::abs(xk - exact));
+    }
+
+    EXPECT_LT(lgl_err, hs_err)
+        << "LGL with " << n_nodes << " nodes should outperform HS with "
+        << n_nodes << " nodes on smooth exp(-t)";
 }
