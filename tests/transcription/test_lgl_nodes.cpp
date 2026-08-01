@@ -59,6 +59,37 @@ TEST(LglNodes, DifferentiationMatrixOfLinearIsOne) {
     }
 }
 
+TEST(LglNodes, ThreePointKnownValues) {
+    std::vector<double> nodes, weights;
+    goss::transcription::lgl_nodes_and_weights(3, nodes, weights);
+    ASSERT_EQ(nodes.size(), 3u);
+    EXPECT_NEAR(nodes[0], -1.0, 1e-14);
+    EXPECT_NEAR(nodes[1],  0.0, 1e-14);
+    EXPECT_NEAR(nodes[2],  1.0, 1e-14);
+    EXPECT_NEAR(weights[0], 1.0/3.0, 1e-14);
+    EXPECT_NEAR(weights[1], 4.0/3.0, 1e-14);
+    EXPECT_NEAR(weights[2], 1.0/3.0, 1e-14);
+}
+
+TEST(LglNodes, DifferentiationMatrixExactUpToDegreeN) {
+    // For n LGL nodes (degree N=n-1), D differentiates x^k exactly for k=0..N.
+    for (std::size_t n : {4u, 5u, 6u}) {
+        std::vector<double> nodes, weights;
+        goss::transcription::lgl_nodes_and_weights(n, nodes, weights);
+        auto D = goss::transcription::lgl_differentiation_matrix(nodes);
+        const std::size_t N = n - 1;
+        for (std::size_t k = 2; k <= N; ++k) {
+            for (std::size_t i = 0; i < n; ++i) {
+                double computed = 0.0;
+                for (std::size_t j = 0; j < n; ++j)
+                    computed += D[i * n + j] * std::pow(nodes[j], static_cast<double>(k));
+                const double expected = static_cast<double>(k) * std::pow(nodes[i], static_cast<double>(k - 1));
+                EXPECT_NEAR(computed, expected, 1e-9) << "n=" << n << " k=" << k << " row=" << i;
+            }
+        }
+    }
+}
+
 TEST(LglNodes, RejectsTooFewPoints) {
     std::vector<double> nodes, weights;
     EXPECT_THROW(goss::transcription::lgl_nodes_and_weights(1, nodes, weights),
