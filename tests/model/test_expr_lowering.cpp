@@ -4,10 +4,12 @@
 // Each test verifies that the operator returns the correct constraint struct
 // and that apply_bound / apply_boundary forward correctly to Model setters.
 // Also tests the integral() / CostFunctor DSL wrapper (Task 5).
+// Task 6: ExprModel fluent builder tests.
 #include <gtest/gtest.h>
 #include "goss/model/expr/constraints.hpp"   // includes handles.hpp, model.hpp, transcription.hpp
 #include "goss/model/expr/integral.hpp"
 #include "goss/model/expr/operators.hpp"     // operator+/-/* on expression nodes
+#include "goss/model/expr/expr_model.hpp"
 #include "goss/model/model.hpp"
 #include "goss/transcription/transcription.hpp"
 #include <cppad/cppad.hpp>
@@ -124,4 +126,65 @@ TEST(ExprIntegral, CostFunctorSatisfiesModelBuildCostFnContract) {
     };
     // If CostFunctor does not satisfy CostFn, this will not compile.
     EXPECT_NO_THROW(model.build(trivial_dynamics, cost_functor));
+}
+
+// ─── Task 6: ExprModel fluent builder tests ──────────────────────────────────
+
+TEST(ExprModel, WithDynamicsAndCostAssemblesOcpMatchingLambdaVersion) {
+    const double ARRIVAL = 3.0;
+    const double WEIGHT  = 0.1;
+
+    // --- ExprModel (expression DSL) path ---
+    goss::model::expr::ExprModel<> expr_model{};
+    auto q    = expr_model.add_state("queue_length");
+    auto rate = expr_model.add_control("service_rate");
+    expr_model.apply(q >= 0.0);
+    expr_model.apply(rate >= 0.0);
+    expr_model.apply(rate <= 5.0);
+    expr_model.apply(q.initial() == 10.0);
+    expr_model.set_mesh(0.0, 5.0, 10);
+
+    using namespace goss::model::expr;
+    // dq/dt = ARRIVAL - rate
+    const auto dynamics_expr = ConstantExpr{ARRIVAL} - ControlLeaf{rate.index};
+    // cost = q + WEIGHT * rate^2
+    const auto cost_expr     = StateLeaf{q.index} + ConstantExpr{WEIGHT} * ControlLeaf{rate.index} * ControlLeaf{rate.index};
+
+    auto built_expr_model = std::move(expr_model)
+        .with_dynamics(q, dynamics_expr)
+        .with_cost(integral(cost_expr));
+    auto ocp_from_expr = built_expr_model.build();
+
+    // Verify fields match expected values.
+    EXPECT_EQ(ocp_from_expr.num_states, 1u);
+    EXPECT_EQ(ocp_from_expr.num_controls, 1u);
+    EXPECT_DOUBLE_EQ(ocp_from_expr.state_lower[0], 0.0);
+    EXPECT_DOUBLE_EQ(ocp_from_expr.initial_state[0], 10.0);
+    EXPECT_DOUBLE_EQ(ocp_from_expr.initial_state_fixed[0], 1.0);
+    EXPECT_DOUBLE_EQ(ocp_from_expr.control_lower[0], 0.0);
+    EXPECT_DOUBLE_EQ(ocp_from_expr.control_upper[0], 5.0);
+
+    // Verify dynamics eval under double: ARRIVAL - rate = 3.0 - 2.0 = 1.0
+    const std::vector<double> x_test{5.0};
+    const std::vector<double> u_test{2.0};
+    const auto dyn_result = ocp_from_expr.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dyn_result.size(), 1u);
+    EXPECT_DOUBLE_EQ(dyn_result[0], 1.0);  // 3.0 - 2.0
+
+    // Verify cost eval under double: 5.0 + 0.1*4.0 = 5.4
+    EXPECT_DOUBLE_EQ(ocp_from_expr.cost(x_test, u_test, 0.0), 5.4);
+}
+
+TEST(ExprModel, MissingDynamicsForStateThrowsExprError) {
+    goss::model::expr::ExprModel<> expr_model{};
+    expr_model.add_state("q");
+    expr_model.add_state("p");  // second state, no dynamics
+    expr_model.add_control("u");
+    expr_model.set_mesh(0.0, 1.0, 2);
+
+    using namespace goss::model::expr;
+    auto partial_model = std::move(expr_model)
+        .with_dynamics(goss::model::StateHandle{0}, StateLeaf{0});
+    // build() should detect that state 1 has no dynamics expression
+    EXPECT_THROW(partial_model.build(), goss::model::expr::ExprError);
 }
