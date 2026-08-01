@@ -160,7 +160,8 @@ add_executable(goss_model_tests
   tests/model/test_composed_model.cpp
   tests/model/test_composition_solve.cpp
   tests/model/test_expr_nodes.cpp
-  tests/model/test_expr_lowering.cpp)
+  tests/model/test_expr_lowering.cpp
+  tests/model/test_expr_solve.cpp)
 target_include_directories(goss_model_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_model_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
