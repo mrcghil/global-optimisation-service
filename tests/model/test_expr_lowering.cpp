@@ -188,3 +188,53 @@ TEST(ExprModel, MissingDynamicsForStateThrowsExprError) {
     // build() should detect that state 1 has no dynamics expression
     EXPECT_THROW(partial_model.build(), goss::model::expr::ExprError);
 }
+
+// Exercises path B: cost IS set (monostate guard does not fire), but only 1
+// dynamics entry is registered for a 2-state model — the count-mismatch check
+// must throw ExprError.
+TEST(ExprModel, CountMismatchWithCostSetThrowsExprError) {
+    using namespace goss::model::expr;
+    goss::model::expr::ExprModel<> m;
+    const auto q = m.add_state("q");
+    m.add_state("p");
+    m.add_control("u");
+    m.set_mesh(0.0, 1.0, 2);
+    EXPECT_THROW(
+        std::move(m)
+            .with_dynamics(q, StateLeaf{q.index})
+            .with_cost(integral(StateLeaf{q.index}))
+            .build(),
+        goss::model::expr::ExprError);
+}
+
+// Verifies that DynamicsFunctor places each entry's eval into result[state_index]
+// rather than into the tuple position in which with_dynamics was called.
+// The two states have deliberately distinct constant dynamics (7.0 and 9.0).
+// with_dynamics is called for state 1 (index 1) FIRST, then for state 0 (index 0).
+// A tuple-position implementation would place 9.0 at result[0] and 7.0 at
+// result[1]; the correct state-index implementation must give result[0]==7.0
+// and result[1]==9.0.
+TEST(ExprModel, OutOfOrderDynamicsPlacedByStateIndex) {
+    using namespace goss::model::expr;
+    goss::model::expr::ExprModel<> m;
+    const auto state0 = m.add_state("x0");  // index 0
+    const auto state1 = m.add_state("x1");  // index 1
+    m.add_control("u");
+    m.set_mesh(0.0, 1.0, 2);
+
+    // state1 (index 1) registered BEFORE state0 (index 0) — reversed order.
+    auto ocp = std::move(m)
+        .with_dynamics(state1, ConstantExpr{9.0})
+        .with_dynamics(state0, ConstantExpr{7.0})
+        .with_cost(integral(StateLeaf{state0.index}))
+        .build();
+
+    const std::vector<double> x_vec{0.0, 0.0};
+    const std::vector<double> u_vec{0.0};
+    const auto result = ocp.dynamics(x_vec, u_vec, 0.0);
+
+    ASSERT_EQ(result.size(), 2u);
+    // Placement must follow state_index, NOT call order.
+    EXPECT_DOUBLE_EQ(result[0], 7.0);  // state0's dynamics
+    EXPECT_DOUBLE_EQ(result[1], 9.0);  // state1's dynamics
+}
