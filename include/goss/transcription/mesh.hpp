@@ -14,7 +14,8 @@ struct NonUniformMesh {
     std::vector<double> node_times;
 
     std::size_t num_nodes()     const { return node_times.size(); }
-    std::size_t num_intervals() const { return node_times.size() - 1; }
+    // Guard against unsigned underflow: an empty or single-node vector has no intervals.
+    std::size_t num_intervals() const { return node_times.size() < 2 ? 0 : node_times.size() - 1; }
     double t_initial()          const { return node_times.front(); }
     double t_final()            const { return node_times.back(); }
 

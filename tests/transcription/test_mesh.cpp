@@ -36,6 +36,26 @@ TEST(NonUniformMesh, ValidateRejectsTooFewNodes) {
     EXPECT_THROW(mesh.validate(), goss::transcription::TranscriptionError);
 }
 
+// Regression: empty mesh must not produce garbage num_intervals (unsigned underflow fix).
+TEST(NonUniformMesh, EmptyMeshNumIntervalsIsZero) {
+    goss::transcription::NonUniformMesh mesh;
+    EXPECT_EQ(mesh.num_intervals(), 0u);
+}
+
+// Regression: interval_width on an empty mesh must throw, not invoke UB.
+TEST(NonUniformMesh, EmptyMeshIntervalWidthThrows) {
+    goss::transcription::NonUniformMesh mesh;
+    EXPECT_THROW(mesh.interval_width(0), goss::transcription::TranscriptionError);
+}
+
+// Regression: single-node mesh also has 0 intervals and throws on interval_width.
+TEST(NonUniformMesh, SingleNodeMeshNumIntervalsIsZero) {
+    goss::transcription::NonUniformMesh mesh;
+    mesh.node_times = {5.0};
+    EXPECT_EQ(mesh.num_intervals(), 0u);
+    EXPECT_THROW(mesh.interval_width(0), goss::transcription::TranscriptionError);
+}
+
 TEST(NonUniformMesh, BisectIntervalsInsertsCorrectMidpoints) {
     goss::transcription::NonUniformMesh base;
     base.node_times = {0.0, 1.0, 2.0, 3.0};

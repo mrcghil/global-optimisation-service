@@ -1,6 +1,5 @@
 // src/transcription/mesh.cpp
 #include "goss/transcription/mesh.hpp"
-#include <algorithm>
 #include <string>
 
 namespace goss::transcription {
