@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
-#include <stdexcept>
+#include <limits>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
@@ -26,7 +26,11 @@ namespace goss::accuracy {
 /// Unpacked solution from a solved OCP: one entry per node.
 /// states[k][i]   = x_i at node k.
 /// controls[k][j] = u_j at node k.
-/// times[k]       = t at node k (uniform spacing: t0 + k*h).
+/// times[k]       = CURRENTLY the 0-based node index (0,1,2,...), NOT physical
+///                  time. CompiledOcp does not retain the mesh, so real time
+///                  reconstruction is deferred — see the WHY comment inside
+///                  solve_and_extract_trajectory. Tests needing physical t must
+///                  recompute it from num_intervals and the horizon T themselves.
 /// objective_value = optimal cost returned by the solver.
 struct SolutionTrajectory {
     std::vector<double>              times;
@@ -139,6 +143,15 @@ double estimate_convergence_slope(
         }
 
         const double error = error_at_mesh_size(trajectory, num_intervals);
+        // Guard: a zero or negative error makes std::log() produce -inf/NaN and
+        // silently poisons the least-squares fit with no diagnostic. Fail loudly
+        // instead so a mis-specified error metric is caught, not masked.
+        if (!(error > 0.0)) {
+            ADD_FAILURE() << "estimate_convergence_slope: error metric returned "
+                          << error << " (must be > 0) at num_intervals="
+                          << num_intervals;
+            return std::numeric_limits<double>::quiet_NaN();
+        }
         // WHY: mesh step h = (t_final - t_initial) / num_intervals.
         // The OCP's time horizon is baked into problem_factory; we use 1/num_intervals
         // as a proportional h (the absolute duration cancels in the slope ratio).
