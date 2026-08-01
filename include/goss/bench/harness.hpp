@@ -2,6 +2,7 @@
 #pragma once
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 #include "goss/bench/benchmark_result.hpp"
