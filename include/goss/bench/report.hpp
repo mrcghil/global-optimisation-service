@@ -27,8 +27,10 @@ inline std::string to_table(const std::vector<BenchmarkResult>& results) {
 
     std::ostringstream out;
     auto row_separator = [&]() {
+        // Width is exactly the sum of all column widths: no inter-column separators,
+        // so the separator is flush with the data rows.
         out << std::string(kColScheme + kColSolver + kColStatus + kColObjective
-                           + kColTime + kColValErr + kColNVars + 8, '-') << "\n";
+                           + kColTime + kColValErr + kColNVars, '-') << "\n";
     };
 
     // Header row.
@@ -86,6 +88,7 @@ inline void write_csv(const std::vector<BenchmarkResult>& results,
     std::ofstream file(path);
     if (!file) throw BenchError("write_csv: cannot open '" + path + "' for writing");
     file << to_csv(results);
+    file.flush();
     if (!file) throw BenchError("write_csv: write failed for '" + path + "'");
 }
 

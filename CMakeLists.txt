@@ -188,7 +188,7 @@ add_executable(goss_bench_tests
 target_include_directories(goss_bench_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_bench_tests PRIVATE
     goss_bench goss_sim goss_solver goss_model goss_transcription
-    goss_nlp goss_ad goss_ad_impl goss_solver
+    goss_nlp goss_ad goss_ad_impl
     goss_ipopt_iface goss_nlopt_iface cppadcg
     $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_bench_tests)

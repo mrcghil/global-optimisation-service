@@ -78,6 +78,10 @@ std::vector<BenchmarkResult> run_scheme(
 
         // Validate only when the solver converged; a failed solution vector
         // would produce a meaningless (possibly NaN) validation error.
+        // Precondition: a well-behaved solver returns result.x sized to
+        // layout.total_variables() on Success. If a solver adapter violates that,
+        // validate_by_integration throws SimError, which propagates out of run_scheme
+        // — intentional: it surfaces a solver-adapter bug rather than hiding it.
         if (solve_result.status == goss::solver::SolverStatus::Success) {
             bench_result.validation_error =
                 goss::sim::validate_by_integration(ocp, solve_result, layout);
