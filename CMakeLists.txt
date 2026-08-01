@@ -172,3 +172,19 @@ target_link_libraries(goss_sim_tests PRIVATE
   goss_ipopt_iface goss_nlopt_iface cppadcg
   $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_sim_tests)
+
+# ---- Benchmark harness layer ----
+add_library(goss_bench INTERFACE)
+target_include_directories(goss_bench INTERFACE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(goss_bench INTERFACE goss_sim goss_solver goss_model
+    goss_transcription goss_nlp goss_ad)
+
+add_executable(goss_bench_tests
+    tests/bench/test_benchmark_result.cpp)
+target_include_directories(goss_bench_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_bench_tests PRIVATE
+    goss_bench goss_sim goss_solver goss_model goss_transcription
+    goss_nlp goss_ad goss_ad_impl goss_solver
+    goss_ipopt_iface goss_nlopt_iface cppadcg
+    $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+gtest_discover_tests(goss_bench_tests)
