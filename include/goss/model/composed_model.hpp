@@ -133,6 +133,12 @@ class ComposedModel {
 
     // ---- Task 5: build() overloads ----
     //
+    // NOTE — Algebraic-variable (DAE) flavor is NOT implemented in v1.
+    // See component.hpp "FOLLOW-ON: Algebraic-variable flavor" for the full design note.
+    // When Flavor 2 is implemented, build() will additionally collect algebraic entries
+    // from all components, extend the OcpProblem with algebraic_residuals/num_algebraic,
+    // and route them through the transcription defect machinery.
+    //
     // Convention for argument ordering:
     //   1. All derived-expression generic lambdas in topological order
     //      (signature: (const auto& x, const auto& u, const auto& deriveds_so_far, auto t) -> T)

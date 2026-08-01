@@ -129,6 +129,57 @@ class Component {
         return DerivedHandle{local_index};
     }
 
+    // -------------------------------------------------------------------------
+    // FOLLOW-ON (NOT BUILT IN v1): Algebraic-variable flavor of derived quantities
+    // -------------------------------------------------------------------------
+    //
+    // Spec §8 describes two flavors of derived quantities:
+    //
+    //   Flavor 1 — Inline expression (built in v1): A derived quantity is a pure
+    //   function of (x, u, t), evaluated in topological order inside the dynamics
+    //   functor. No new NLP variable is introduced. This is what add_derived() provides.
+    //
+    //   Flavor 2 — Algebraic variable (DAE-style, deferred to a follow-on plan):
+    //   A derived quantity is promoted to a real NLP decision variable with a
+    //   defining equality constraint  v − g(x, u, t) = 0  enforced at every
+    //   collocation node. This is the algebraic-variable (DAE) flavor.
+    //
+    // The intended API for Flavor 2 would be:
+    //
+    //   DerivedHandle Component::add_algebraic(
+    //       const std::string& name,
+    //       std::function<double(const std::vector<double>& x,
+    //                            const std::vector<double>& u,
+    //                            double t)> defining_residual,
+    //       double lower, double upper);
+    //
+    // where `defining_residual` evaluates g(x, u, t) so that the solver enforces
+    // v − defining_residual(x, u, t) = 0 at each node.
+    //
+    // Implementing Flavor 2 requires four additive changes (none break the v1 path):
+    //
+    //   1. OcpProblem new field: `algebraic_residuals` functor
+    //      (x, u, alg_vars, t) → vector<T> of residuals, plus `num_algebraic` count
+    //      and per-variable lower/upper bounds.
+    //
+    //   2. VariableLayout extension: algebraic variables become per-node slots in
+    //      the NLP decision vector z (analogous to states), requiring a new
+    //      `algebraic_index(node, j)` accessor.
+    //
+    //   3. Transcription packed-functor extension: Trapezoidal and HermiteSimpson
+    //      compile functions must emit one additional equality-constraint output
+    //      per algebraic variable per collocation node, added to gl/gu as defect
+    //      rows (reusing the existing transcription defect seam from spec §7
+    //      "Algebraic (DAE) constraints → transcription/").
+    //
+    //   4. ComposedModel::build() extension: collect algebraic entries from all
+    //      components, populate OcpProblem::algebraic_residuals and num_algebraic,
+    //      and forward them through the transcription pipeline.
+    //
+    // This is estimated as a medium-sized follow-on plan (3–4 tasks).
+    // Implement only after v1 composition is merged and validated.
+    // -------------------------------------------------------------------------
+
     /// Register this component's dynamics (double-typed, for validation only).
     /// The lambda must return a vector of size == num_owned_states().
     void set_dynamics(
