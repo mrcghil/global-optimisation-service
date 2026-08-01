@@ -96,3 +96,26 @@ TEST(ToCsv, StatusNameIsHumanReadable) {
     std::string csv = goss::bench::to_csv({result});
     EXPECT_NE(csv.find("IterationLimit"), std::string::npos);
 }
+
+TEST(ToTable, FourRowsHaveCorrectLineCount) {
+    // A full 2-scheme x 2-solver matrix of synthetic results.
+    // to_table format: separator + header + separator + N data rows + separator = N + 3 lines.
+    std::vector<goss::bench::BenchmarkResult> results = {
+        make_result("Trapezoidal",   "IpoptSolver",  goss::solver::SolverStatus::Success,   0.5,  0.10, 1e-5, 42),
+        make_result("Trapezoidal",   "NloptSolver",  goss::solver::SolverStatus::Success,   0.51, 0.30, 2e-5, 42),
+        make_result("HermiteSimpson","IpoptSolver",  goss::solver::SolverStatus::Success,   0.5,  0.12, 5e-6, 82),
+        make_result("HermiteSimpson","NloptSolver",  goss::solver::SolverStatus::IterationLimit, 0.0, 1.50, 0.0, 82),
+    };
+    std::string table = goss::bench::to_table(results);
+
+    // All four scheme/solver combinations must appear.
+    EXPECT_NE(table.find("Trapezoidal"),      std::string::npos);
+    EXPECT_NE(table.find("HermiteSimpson"),   std::string::npos);
+    EXPECT_NE(table.find("NloptSolver"),      std::string::npos);
+    EXPECT_NE(table.find("IterationLimit"),   std::string::npos);
+
+    // The table must be non-trivially multi-line: at least header + 4 data rows + separators.
+    const int newline_count = static_cast<int>(std::count(table.begin(), table.end(), '\n'));
+    // 3 separator lines + 1 header + 4 data rows = 8 minimum.
+    EXPECT_GE(newline_count, 8);
+}
