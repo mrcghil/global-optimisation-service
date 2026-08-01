@@ -5,3 +5,4 @@
 #include "goss/model/expr/errors.hpp"
 #include "goss/model/expr/nodes.hpp"
 #include "goss/model/expr/operators.hpp"
+#include "goss/model/expr/constraints.hpp"
