@@ -4,3 +4,4 @@
 #pragma once
 #include "goss/model/expr/errors.hpp"
 #include "goss/model/expr/nodes.hpp"
+#include "goss/model/expr/operators.hpp"
