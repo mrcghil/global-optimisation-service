@@ -180,7 +180,8 @@ target_link_libraries(goss_bench INTERFACE goss_sim goss_solver goss_model
     goss_transcription goss_nlp goss_ad)
 
 add_executable(goss_bench_tests
-    tests/bench/test_benchmark_result.cpp)
+    tests/bench/test_benchmark_result.cpp
+    tests/bench/test_report.cpp)
 target_include_directories(goss_bench_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_bench_tests PRIVATE
     goss_bench goss_sim goss_solver goss_model goss_transcription
