@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <vector>
+#include "goss/transcription/errors.hpp"
 #include "goss/transcription/legendre_gauss_lobatto.hpp"
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
@@ -31,6 +32,35 @@ TEST(LegendreGaussLobatto, PinsInitialState) {
     std::size_t idx = compiled.layout.state_index(0, 0);
     EXPECT_DOUBLE_EQ(compiled.problem->variable_lower_bounds()[idx], 2.0);
     EXPECT_DOUBLE_EQ(compiled.problem->variable_upper_bounds()[idx], 2.0);
+}
+
+// Regression test: compile() must throw TranscriptionError when any initial state
+// component is not pinned (initial_state_fixed[i] == 0). The omitted node-0 defect
+// makes the system underdetermined for free initial states — reject early to prevent
+// IPOPT from silently returning an arbitrary x(0).
+TEST(LegendreGaussLobatto, RejectsFreeInitialState) {
+    // Build an OCP identical to make_exponential_decay but with initial_state_fixed[0] = 0
+    // (free initial state) — compile() must throw before building the NLP.
+    goss::transcription::OcpProblem<goss::transcription::test::ExpDecayDynamics,
+                                    goss::transcription::test::ZeroCost>
+        ocp;
+    ocp.num_states = 1;
+    ocp.num_controls = 0;
+    ocp.dynamics = goss::transcription::test::ExpDecayDynamics{};
+    ocp.cost = goss::transcription::test::ZeroCost{};
+    ocp.mesh = goss::transcription::Mesh{0.0, 1.0, /*intervals=*/7};
+    ocp.state_lower = { -1e19 };
+    ocp.state_upper = { 1e19 };
+    ocp.control_lower = {};
+    ocp.control_upper = {};
+    ocp.initial_state = { 1.0 };
+    ocp.initial_state_fixed = { 0.0 };   // FREE initial state — must be rejected
+    ocp.final_state = { 0.0 };
+    ocp.final_state_fixed = { 0.0 };
+
+    EXPECT_THROW(
+        goss::transcription::LegendreGaussLobatto::compile(ocp, "lgl_free_init"),
+        goss::transcription::TranscriptionError);
 }
 
 TEST(LegendreGaussLobatto, SolvesHarmonicOscillator) {

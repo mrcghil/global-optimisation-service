@@ -18,11 +18,18 @@ namespace goss::transcription {
 /// Convergence is spectral (super-algebraic) for smooth problems — exponential
 /// in the number of nodes, unlike the algebraic O(h^p) of local schemes.
 ///
-/// The ODE is enforced at every node via the global differentiation matrix D:
-///   (D @ X)[k, s] = (tf-t0)/2 * f_s(x_k, u_k, t_k)   for all k, s
+/// The ODE is enforced at nodes k = 1..n-1 via the global differentiation matrix D:
+///   (D @ X)[k, s] = (tf-t0)/2 * f_s(x_k, u_k, t_k)   for k = 1..n-1, all s
+/// Node 0's ODE defect is omitted because the initial state is pinned (fixed by
+/// variable bounds); x(0) still enters all other defects through the dense D matrix,
+/// so the initial condition propagates globally into every remaining equation.
 /// This produces dense coupling (every node in every defect), unlike the banded
 /// local schemes. For moderate n (up to ~40) this is still efficient; for large n
 /// consider multiple LGL sub-intervals (hp-pseudospectral, out of scope here).
+///
+/// REQUIREMENT: all initial state components MUST be pinned via set_initial_state /
+/// initial_state_fixed before calling compile(). Free initial states are not supported
+/// (omitting the node-0 defect only avoids overdetermination when x(0) is fixed).
 struct LegendreGaussLobatto {
     template <typename DynamicsFn, typename CostFn>
     static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
@@ -44,6 +51,21 @@ struct LegendreGaussLobatto {
             throw TranscriptionError("compile: control bound vectors must have size == num_controls");
         if (ocp.initial_state.size() != ns || ocp.final_state.size() != ns)
             throw TranscriptionError("compile: initial_state/final_state must have size == num_states");
+
+        // Guard: all initial state components must be pinned.
+        // The node-0 collocation defect is omitted (to avoid overdetermination when
+        // x(0) is fixed). If any x_i(0) is free, the system becomes underdetermined
+        // for that component — IPOPT would find an arbitrary x_i(0) silently.
+        for (std::size_t i = 0; i < ns; ++i) {
+            const bool pinned =
+                (i < ocp.initial_state_fixed.size()) && (ocp.initial_state_fixed[i] != 0.0);
+            if (!pinned) {
+                throw TranscriptionError(
+                    "LegendreGaussLobatto: all initial states must be pinned "
+                    "(set_initial_state) — free initial states are not supported "
+                    "(the node-0 collocation defect is omitted for the pinned case).");
+            }
+        }
 
         // Pre-compute LGL nodes on [-1,1] and map to [t0,tf].
         std::vector<double> lgl_xi, lgl_weights_ref;
