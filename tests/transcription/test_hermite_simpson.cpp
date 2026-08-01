@@ -3,6 +3,7 @@
 #include <cmath>
 #include <vector>
 #include "goss/transcription/hermite_simpson.hpp"
+#include "goss/transcription/mesh.hpp"
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
 
@@ -85,4 +86,34 @@ TEST(HermiteSimpson, ConvergesAtFourthOrder) {
     // HS is O(h^4). Allow slack (3.5) for solver-tolerance contamination at fine meshes.
     EXPECT_GE(order1, 3.5) << "Hermite-Simpson should be ~4th order";
     EXPECT_GE(order2, 3.5) << "Hermite-Simpson should be ~4th order";
+}
+
+TEST(HermiteSimpson, NonUniformMeshSolvesExponentialDecay) {
+    const double x0 = 1.0;
+    auto ocp = goss::transcription::test::make_exponential_decay(x0, 1.0, 1);
+    goss::transcription::NonUniformMesh nu_mesh;
+    nu_mesh.node_times = {0.0, 0.05, 0.1, 0.2, 0.4, 0.7, 1.0};
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, nu_mesh, "hs_nu_expdecay");
+    goss::solver::IpoptSolver solver;
+    solver.set_tolerance(1e-10);
+    std::vector<double> z0(compiled.problem->num_variables(), x0);
+    auto result = solver.solve(*compiled.problem, z0);
+    ASSERT_EQ(result.status, goss::solver::SolverStatus::Success);
+    std::size_t last = compiled.layout.num_nodes() - 1;
+    double x_final = result.x[compiled.layout.state_index(last, 0)];
+    EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-4);
+}
+
+TEST(HermiteSimpson, UniformOverloadStillPassesAfterRefactor) {
+    const double x0 = 1.0;
+    auto ocp = goss::transcription::test::make_exponential_decay(x0, 1.0, 20);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_uniform_regression");
+    goss::solver::IpoptSolver solver;
+    solver.set_tolerance(1e-11);
+    std::vector<double> z0(compiled.problem->num_variables(), x0);
+    auto result = solver.solve(*compiled.problem, z0);
+    ASSERT_EQ(result.status, goss::solver::SolverStatus::Success);
+    std::size_t last = compiled.layout.num_nodes() - 1;
+    double x_final = result.x[compiled.layout.state_index(last, 0)];
+    EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-5);
 }

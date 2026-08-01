@@ -71,4 +71,31 @@ inline double harmonic_x0_solution(double a, double b, double t) {
     return a * std::cos(t) + b * std::sin(t);
 }
 
+// dx/dt = -10*x ; analytic x(t) = x0 * exp(-10*t). Fast decay, 1 state, 0 controls, zero cost.
+// On a coarse uniform mesh the early intervals carry large truncation error; used to exercise AMR.
+struct FastDecayDynamics {
+    template <typename T>
+    std::vector<T> operator()(const std::vector<T>& x, const std::vector<T>& /*u*/, T /*t*/) const {
+        return { T(-10.0) * x[0] };
+    }
+};
+
+inline auto make_fast_decay(double x0, double tf, std::size_t intervals) {
+    OcpProblem<FastDecayDynamics, ZeroCost> ocp;
+    ocp.num_states = 1;
+    ocp.num_controls = 0;
+    ocp.dynamics = FastDecayDynamics{};
+    ocp.cost = ZeroCost{};
+    ocp.mesh = Mesh{0.0, tf, intervals};
+    ocp.state_lower = { -1e19 };
+    ocp.state_upper = { 1e19 };
+    ocp.control_lower = {};
+    ocp.control_upper = {};
+    ocp.initial_state = { x0 };
+    ocp.initial_state_fixed = { 1.0 };
+    ocp.final_state = { 0.0 };
+    ocp.final_state_fixed = { 0.0 };
+    return ocp;
+}
+
 }  // namespace goss::transcription::test

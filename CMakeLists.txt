@@ -121,7 +121,11 @@ gtest_discover_tests(goss_solver_tests)
 # ---- Transcription layer ----
 add_library(goss_transcription STATIC
   src/transcription/trapezoidal.cpp
-  src/transcription/hermite_simpson.cpp)
+  src/transcription/hermite_simpson.cpp
+  src/transcription/legendre_gauss_lobatto.cpp
+  src/transcription/mesh.cpp
+  src/transcription/mesh_refinement.cpp
+  src/transcription/lgl_nodes.cpp)
 target_include_directories(goss_transcription PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(goss_transcription PUBLIC goss_nlp goss_ad
   PRIVATE goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
@@ -130,7 +134,11 @@ add_executable(goss_transcription_tests
   tests/transcription/test_variable_layout.cpp
   tests/transcription/test_trapezoidal.cpp
   tests/transcription/test_hermite_simpson.cpp
-  tests/transcription/test_scheme_agreement.cpp)
+  tests/transcription/test_legendre_gauss_lobatto.cpp
+  tests/transcription/test_scheme_agreement.cpp
+  tests/transcription/test_mesh.cpp
+  tests/transcription/test_mesh_refinement.cpp
+  tests/transcription/test_lgl_nodes.cpp)
 target_include_directories(goss_transcription_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_transcription_tests PRIVATE

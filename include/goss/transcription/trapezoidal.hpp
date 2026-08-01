@@ -6,6 +6,7 @@
 #include "goss/ad/cppadcg_backend.hpp"
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/transcription/errors.hpp"
+#include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
 #include "goss/transcription/variable_layout.hpp"
@@ -13,16 +14,17 @@
 namespace goss::transcription {
 
 struct Trapezoidal {
+    // Primary overload: explicit non-uniform node times.
+    // All implementation logic lives here; the uniform path delegates to this.
     template <typename DynamicsFn, typename CostFn>
     static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+                               const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_trap") {
-        ocp.mesh.validate();
+        mesh.validate();
         const std::size_t ns = ocp.num_states;
         const std::size_t nc = ocp.num_controls;
-        const std::size_t nn = ocp.mesh.num_nodes();
-        const std::size_t ni = ocp.mesh.num_intervals;
-        const double t0 = ocp.mesh.t_initial;
-        const double h = ocp.mesh.interval_width();
+        const std::size_t nn = mesh.num_nodes();
+        const std::size_t ni = mesh.num_intervals();
 
         // Validate bound-vector sizes before touching any element.
         if (ocp.state_lower.size() != ns || ocp.state_upper.size() != ns)
@@ -34,9 +36,13 @@ struct Trapezoidal {
 
         VariableLayout layout(ns, nc, nn);
 
-        // The packed functor: captures ocp by value (functors are cheap), layout by value.
+        // Capture node_times by value so the packed functor owns the data.
+        // Per-interval hk = node_times[k+1] - node_times[k]; per-node tk = node_times[k].
+        const std::vector<double> node_times = mesh.node_times;
+
+        // The packed functor: captures ocp, layout, and node_times by value.
         // Uses generic lambda so it can be instantiated with the AD type during recording.
-        auto packed = [ocp, layout, ns, nc, nn, ni, t0, h](const auto& z) {
+        auto packed = [ocp, layout, ns, nc, nn, ni, node_times](const auto& z) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
             outputs.reserve(1 + ni * ns);
@@ -53,29 +59,31 @@ struct Trapezoidal {
                 return u;
             };
 
-            // Output 0: trapezoidal quadrature of running cost.
-            // Endpoints weight h/2, interior nodes weight h.
+            // Output 0: trapezoidal cost quadrature summed per-interval.
+            // Each interval k contributes (hk/2)*(L_k + L_{k+1}).
             T cost = T(0);
-            for (std::size_t k = 0; k < nn; ++k) {
-                T tk = T(t0 + static_cast<double>(k) * h);
-                T Lk = ocp.cost(state_at(k), control_at(k), tk);
-                // trapezoid weights: endpoints h/2, interior h
-                T weight = (k == 0 || k == nn - 1) ? T(h / 2.0) : T(h);
-                cost += weight * Lk;
+            for (std::size_t k = 0; k < ni; ++k) {
+                T tk  = T(node_times[k]);
+                T tk1 = T(node_times[k + 1]);
+                T hk  = tk1 - tk;
+                T Lk  = ocp.cost(state_at(k),     control_at(k),     tk);
+                T Lk1 = ocp.cost(state_at(k + 1), control_at(k + 1), tk1);
+                cost += T(0.5) * hk * (Lk + Lk1);
             }
             outputs.push_back(cost);
 
             // Outputs 1..: defects per interval per state.
-            // For interval k: x_{k+1}[i] - x_k[i] - (h/2)*(f_k[i] + f_{k+1}[i]) == 0
+            // For interval k: x_{k+1}[i] - x_k[i] - (hk/2)*(f_k[i] + f_{k+1}[i]) == 0
             for (std::size_t k = 0; k < ni; ++k) {
-                T tk = T(t0 + static_cast<double>(k) * h);
-                T tk1 = T(t0 + static_cast<double>(k + 1) * h);
-                auto xk = state_at(k);
+                T tk  = T(node_times[k]);
+                T tk1 = T(node_times[k + 1]);
+                T hk  = tk1 - tk;
+                auto xk  = state_at(k);
                 auto xk1 = state_at(k + 1);
-                auto fk = ocp.dynamics(xk, control_at(k), tk);
+                auto fk  = ocp.dynamics(xk,  control_at(k),     tk);
                 auto fk1 = ocp.dynamics(xk1, control_at(k + 1), tk1);
                 for (std::size_t i = 0; i < ns; ++i) {
-                    outputs.push_back(xk1[i] - xk[i] - T(h / 2.0) * (fk[i] + fk1[i]));
+                    outputs.push_back(xk1[i] - xk[i] - T(0.5) * hk * (fk[i] + fk1[i]));
                 }
             }
             return outputs;
@@ -99,7 +107,7 @@ struct Trapezoidal {
                 zu[idx] = ocp.control_upper[j];
             }
         }
-        // Pin fixed boundary states via equal bounds (simplest approach: fixed variable).
+        // Pin fixed boundary states via equal bounds.
         // Guard with i < size() so a caller passing a shorter-than-ns fixed vector cannot
         // trigger out-of-bounds access (UB). The contract is that when a pin fires the
         // corresponding initial_state / final_state entry is also valid (same size).
@@ -121,6 +129,14 @@ struct Trapezoidal {
         auto problem = std::make_unique<nlp::NLPProblem>(
             std::move(backend), std::move(zl), std::move(zu), std::move(gl), std::move(gu));
         return CompiledOcp{std::move(problem), layout};
+    }
+
+    // Backward-compatible uniform overload: delegates to the non-uniform path.
+    // This is a one-line wrapper; all implementation is in the overload above.
+    template <typename DynamicsFn, typename CostFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+                               const std::string& model_name = "goss_trap") {
+        return compile(ocp, to_nonuniform(ocp.mesh), model_name);
     }
 };
 

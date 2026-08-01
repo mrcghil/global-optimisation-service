@@ -6,6 +6,7 @@
 #include "goss/ad/cppadcg_backend.hpp"
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/transcription/errors.hpp"
+#include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
 #include "goss/transcription/variable_layout.hpp"
@@ -13,16 +14,17 @@
 namespace goss::transcription {
 
 struct HermiteSimpson {
+    // Primary overload: explicit non-uniform node times.
+    // All implementation logic lives here; the uniform path delegates to this.
     template <typename DynamicsFn, typename CostFn>
     static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+                               const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_hs") {
-        ocp.mesh.validate();
+        mesh.validate();
         const std::size_t ns = ocp.num_states;
         const std::size_t nc = ocp.num_controls;
-        const std::size_t nn = ocp.mesh.num_nodes();
-        const std::size_t ni = ocp.mesh.num_intervals;
-        const double t0 = ocp.mesh.t_initial;
-        const double h = ocp.mesh.interval_width();
+        const std::size_t nn = mesh.num_nodes();
+        const std::size_t ni = mesh.num_intervals();
 
         // Validate bound-vector sizes before touching any element.
         if (ocp.state_lower.size() != ns || ocp.state_upper.size() != ns)
@@ -34,9 +36,13 @@ struct HermiteSimpson {
 
         VariableLayout layout(ns, nc, nn);
 
-        // Packed functor: captures ocp and layout by value (cheap functors).
+        // Capture node_times by value so the packed functor owns the data.
+        // Per-interval hk = node_times[k+1] - node_times[k]; per-node tk = node_times[k].
+        const std::vector<double> node_times = mesh.node_times;
+
+        // Packed functor: captures ocp, layout, and node_times by value (cheap functors).
         // Generic lambda so it can be instantiated with the AD scalar type during recording.
-        auto packed = [ocp, layout, ns, nc, ni, t0, h](const auto& z) {
+        auto packed = [ocp, layout, ns, nc, ni, node_times](const auto& z) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
             outputs.reserve(1 + ni * ns);
@@ -59,17 +65,20 @@ struct HermiteSimpson {
             };
 
             // Output 0: Simpson quadrature cost.
-            // Per interval: (h/6)*(L_k + 4*L_mid + L_{k+1})
-            // where x_mid is the Hermite interpolated midpoint (not a decision variable).
+            // Per interval k: (hk/6)*(L_k + 4*L_mid + L_{k+1})
+            // where x_mid is the Hermite interpolated midpoint (not a decision variable)
+            // and hk = node_times[k+1] - node_times[k] is the per-interval step size.
             T cost = T(0);
             std::vector<T> defects;
             defects.reserve(ni * ns);
 
             for (std::size_t k = 0; k < ni; ++k) {
-                // Times at left endpoint, midpoint, and right endpoint of interval k.
-                T tk   = T(t0 + static_cast<double>(k) * h);
-                T tmid = T(t0 + (static_cast<double>(k) + 0.5) * h);
-                T tk1  = T(t0 + static_cast<double>(k + 1) * h);
+                // Per-interval step size and times (each interval may differ).
+                T tk   = T(node_times[k]);
+                T tk1  = T(node_times[k + 1]);
+                T hk   = tk1 - tk;
+                // Midpoint time is the arithmetic mean of the two endpoint times.
+                T tmid = T(0.5) * (tk + tk1);
 
                 auto xk  = state_at(k);
                 auto xk1 = state_at(k + 1);
@@ -81,25 +90,25 @@ struct HermiteSimpson {
                 auto fk1 = ocp.dynamics(xk1, uk1, tk1);
 
                 // Hermite interpolated midpoint state (compressed form — no decision variable):
-                //   x_mid[i] = 0.5*(x_k[i] + x_{k+1}[i]) + (h/8)*(f_k[i] - f_{k+1}[i])
+                //   x_mid[i] = 0.5*(x_k[i] + x_{k+1}[i]) + (hk/8)*(f_k[i] - f_{k+1}[i])
                 std::vector<T> xmid(ns);
                 for (std::size_t i = 0; i < ns; ++i)
-                    xmid[i] = T(0.5) * (xk[i] + xk1[i]) + T(h / 8.0) * (fk[i] - fk1[i]);
+                    xmid[i] = T(0.5) * (xk[i] + xk1[i]) + (hk / T(8)) * (fk[i] - fk1[i]);
 
                 // Midpoint control and dynamics.
                 auto umid = midpoint_control(uk, uk1);
                 auto fmid = ocp.dynamics(xmid, umid, tmid);
 
                 // Hermite-Simpson defect per state i:
-                //   x_{k+1}[i] - x_k[i] - (h/6)*(f_k[i] + 4*f_mid[i] + f_{k+1}[i]) = 0
+                //   x_{k+1}[i] - x_k[i] - (hk/6)*(f_k[i] + 4*f_mid[i] + f_{k+1}[i]) = 0
                 for (std::size_t i = 0; i < ns; ++i)
-                    defects.push_back(xk1[i] - xk[i] - T(h / 6.0) * (fk[i] + T(4) * fmid[i] + fk1[i]));
+                    defects.push_back(xk1[i] - xk[i] - (hk / T(6)) * (fk[i] + T(4) * fmid[i] + fk1[i]));
 
                 // Simpson cost contribution for this interval.
                 T Lk   = ocp.cost(xk, uk, tk);
                 T Lmid = ocp.cost(xmid, umid, tmid);
                 T Lk1  = ocp.cost(xk1, uk1, tk1);
-                cost += T(h / 6.0) * (Lk + T(4) * Lmid + Lk1);
+                cost += (hk / T(6)) * (Lk + T(4) * Lmid + Lk1);
             }
 
             // Pack outputs: cost first, then defects (same order as Trapezoidal).
@@ -149,6 +158,14 @@ struct HermiteSimpson {
         auto problem = std::make_unique<nlp::NLPProblem>(
             std::move(backend), std::move(zl), std::move(zu), std::move(gl), std::move(gu));
         return CompiledOcp{std::move(problem), layout};
+    }
+
+    // Backward-compatible uniform overload: delegates to the non-uniform path.
+    // This is a one-line wrapper; all implementation is in the overload above.
+    template <typename DynamicsFn, typename CostFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+                               const std::string& model_name = "goss_hs") {
+        return compile(ocp, to_nonuniform(ocp.mesh), model_name);
     }
 };
 
