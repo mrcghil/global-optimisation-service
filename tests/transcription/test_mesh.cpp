@@ -48,6 +48,18 @@ TEST(NonUniformMesh, EmptyMeshIntervalWidthThrows) {
     EXPECT_THROW(mesh.interval_width(0), goss::transcription::TranscriptionError);
 }
 
+// Regression (M-3): t_initial() and t_final() on an empty mesh must throw
+// TranscriptionError rather than invoking UB via front()/back() on empty vector.
+TEST(NonUniformMesh, EmptyMeshTInitialThrows) {
+    goss::transcription::NonUniformMesh mesh;
+    EXPECT_THROW(mesh.t_initial(), goss::transcription::TranscriptionError);
+}
+
+TEST(NonUniformMesh, EmptyMeshTFinalThrows) {
+    goss::transcription::NonUniformMesh mesh;
+    EXPECT_THROW(mesh.t_final(), goss::transcription::TranscriptionError);
+}
+
 // Regression: single-node mesh also has 0 intervals and throws on interval_width.
 TEST(NonUniformMesh, SingleNodeMeshNumIntervalsIsZero) {
     goss::transcription::NonUniformMesh mesh;

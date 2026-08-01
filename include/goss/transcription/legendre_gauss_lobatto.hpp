@@ -7,6 +7,7 @@
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/transcription/errors.hpp"
 #include "goss/transcription/lgl_nodes.hpp"
+#include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
 #include "goss/transcription/variable_layout.hpp"
@@ -57,6 +58,7 @@ struct LegendreGaussLobatto {
         // x(0) is fixed). If any x_i(0) is free, the system becomes underdetermined
         // for that component — IPOPT would find an arbitrary x_i(0) silently.
         for (std::size_t i = 0; i < ns; ++i) {
+            // OcpProblem convention: initial_state_fixed[i] != 0.0 means component i is pinned.
             const bool pinned =
                 (i < ocp.initial_state_fixed.size()) && (ocp.initial_state_fixed[i] != 0.0);
             if (!pinned) {
@@ -177,6 +179,23 @@ struct LegendreGaussLobatto {
             std::move(backend), std::move(zl), std::move(zu),
             std::move(gl), std::move(gu));
         return CompiledOcp{std::move(problem), layout};
+    }
+
+    /// NonUniformMesh overload — always throws.
+    ///
+    /// LGL uses global single-interval collocation over [t0, tf] at LGL nodes.
+    /// Multi-interval adaptive mesh refinement (refine_and_solve) is meaningless
+    /// for this scheme — the mesh is the collocation grid, not an AMR partition.
+    /// Use Trapezoidal or HermiteSimpson for adaptive mesh refinement.
+    template <typename DynamicsFn, typename CostFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>&,
+                               const NonUniformMesh&,
+                               const std::string&) {
+        throw TranscriptionError(
+            "LegendreGaussLobatto does not support NonUniformMesh / refine_and_solve: "
+            "LGL uses global single-interval collocation; multi-interval refinement "
+            "requires hp-pseudospectral (out of scope). Use Trapezoidal or "
+            "HermiteSimpson for adaptive mesh refinement.");
     }
 };
 

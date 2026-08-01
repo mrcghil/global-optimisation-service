@@ -10,6 +10,19 @@
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
 
+// Regression test (M-4): refine_and_solve with max_iterations == 0 must throw
+// TranscriptionError immediately rather than returning a default-constructed result,
+// which would leave final_interval_errors empty and cause UB in callers.
+TEST(MeshRefinement, RejectsZeroMaxIterations) {
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 4);
+    auto initial_mesh = goss::transcription::to_nonuniform(ocp.mesh);
+    EXPECT_THROW(
+        (goss::transcription::refine_and_solve<goss::transcription::Trapezoidal>(
+            ocp, initial_mesh, "amr_zero_iter", /*error_tolerance=*/1e-6,
+            /*max_iterations=*/0)),
+        goss::transcription::TranscriptionError);
+}
+
 TEST(MeshRefinement, ErrorEstimatorReturnsOneEntryPerInterval) {
     const double x0 = 1.0;
     auto ocp = goss::transcription::test::make_exponential_decay(x0, 1.0, 10);

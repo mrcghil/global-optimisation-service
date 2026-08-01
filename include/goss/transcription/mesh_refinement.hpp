@@ -136,6 +136,8 @@ RefinementResult refine_and_solve(
     std::size_t max_iterations         = 10,
     double bisection_threshold         = 0.5) {
 
+    if (max_iterations == 0) throw TranscriptionError("refine_and_solve: max_iterations must be >= 1");
+
     NonUniformMesh current_mesh = initial_mesh;
     current_mesh.validate();
 
@@ -149,10 +151,6 @@ RefinementResult refine_and_solve(
 
     solver::SolverResult current_result;
     VariableLayout current_layout(ns, nc, current_mesh.num_nodes());
-
-    // Build flat initial guess from the pinned initial state (first element suffices
-    // for single-state problems; for multi-state we use the first state value).
-    const double flat_val = ocp.initial_state.empty() ? 0.0 : ocp.initial_state[0];
 
     // The warm-start vector for the next iteration: populated after each solve
     // and interpolated into the new (refined) layout before the next compile.
@@ -169,11 +167,22 @@ RefinementResult refine_and_solve(
         current_layout = compiled.layout;
 
         // Build initial guess for this iteration: warm-start if available,
-        // otherwise fall back to a flat trajectory at the initial state value.
+        // otherwise fall back to a cold start using ocp.initial_state per state.
         std::vector<double> z0;
         if (z_warm.empty()) {
-            // Cold start: flat trajectory at the initial state value.
-            z0.assign(compiled.problem->num_variables(), flat_val);
+            // Cold start: for each node, set state i = ocp.initial_state[i] (or 0.0
+            // if i >= initial_state.size()), and control j = 0.0.
+            // This correctly seeds multi-state problems at each component's own value
+            // rather than using the first state's value for all variables.
+            const std::size_t nv = compiled.problem->num_variables();
+            z0.assign(nv, 0.0);
+            for (std::size_t node = 0; node < current_layout.num_nodes(); ++node) {
+                for (std::size_t i = 0; i < ns; ++i) {
+                    const double val = (i < ocp.initial_state.size()) ? ocp.initial_state[i] : 0.0;
+                    z0[current_layout.state_index(node, i)] = val;
+                }
+                // Controls default to 0.0 (already set above).
+            }
         } else {
             // z_warm was constructed for the current_mesh layout (set at the end
             // of the previous iteration before bisect_intervals was called).

@@ -5,6 +5,7 @@
 #include "goss/transcription/errors.hpp"
 #include "goss/transcription/hermite_simpson.hpp"
 #include "goss/transcription/legendre_gauss_lobatto.hpp"
+#include "goss/transcription/mesh.hpp"
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
 
@@ -137,6 +138,19 @@ TEST(LegendreGaussLobatto, ConvergesSpectrally) {
     // Hard accuracy check: 11 LGL nodes must achieve < 1e-10 on smooth exp(-t).
     EXPECT_LT(errors.back(), 1e-10)
         << "11 LGL nodes should achieve near-machine precision on smooth exp(-t)";
+}
+
+// Regression test (I-1): LegendreGaussLobatto::compile(ocp, NonUniformMesh, name)
+// must throw TranscriptionError with a clear message, not produce a cryptic
+// template compile error. LGL uses global single-interval collocation; calling it
+// with a NonUniformMesh (the refine_and_solve interface) is a misuse.
+TEST(LegendreGaussLobatto, RejectsNonUniformMesh) {
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 4);
+    goss::transcription::NonUniformMesh nu_mesh =
+        goss::transcription::to_nonuniform(ocp.mesh);
+    EXPECT_THROW(
+        goss::transcription::LegendreGaussLobatto::compile(ocp, nu_mesh, "lgl_nu_reject"),
+        goss::transcription::TranscriptionError);
 }
 
 TEST(LegendreGaussLobatto, SameNodeCountOutperformsHermiteSimpson) {
