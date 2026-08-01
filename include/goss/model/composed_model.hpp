@@ -155,7 +155,6 @@ class ComposedModel {
         // Snapshot per-component state layout (global offsets) before moving into lambdas.
         // Components are laid out contiguously in add_component() order.
         const std::size_t num_states  = total_num_states();
-        const std::size_t num_deriveds = 0;
 
         // Per-component state offsets (component i starts at component_state_offsets[i]).
         std::vector<std::size_t> component_state_offsets = compute_component_state_offsets();
@@ -250,14 +249,16 @@ class ComposedModel {
         };
 
         // Wrap cost to conform to OcpProblem's (x, u, t) signature.
-        auto ocp_cost = [combined_cost, num_deriveds, comp0_offset, comp0_nstates](
+        // Re-evaluate derived quantities in topo order (mirroring the dynamics path) so
+        // the cost lambda receives the real derived values, not a zero-filled placeholder.
+        auto ocp_cost = [combined_cost, derived_expr_0, num_deriveds](
                 const auto& x, const auto& u, auto t) {
             using T = typename std::decay_t<decltype(x)>::value_type;
-            // For the cost evaluation, we re-evaluate deriveds inline so the cost lambda
-            // receives the correct deriveds vector.  The combined_cost generic lambda
-            // uses deriveds; however in v1 the cost lambda ignores deriveds in the tests,
-            // so we pass an appropriately-sized zero vector.
             std::vector<T> deriveds(num_deriveds);
+            {
+                std::vector<T> deriveds_so_far;  // topo index 0 has no dependencies
+                deriveds[0] = derived_expr_0(x, u, deriveds_so_far, t);
+            }
             return combined_cost(x, u, deriveds, t);
         };
 
@@ -439,6 +440,20 @@ class ComposedModel {
         }
         if (!mesh_set_) {
             throw ModelError("ComposedModel::build: call set_mesh() before build()");
+        }
+        // A composed OCP needs at least one component that owns a state; without one the
+        // combined dynamics would write nothing and produce a silently-empty problem.
+        bool any_state_owner = false;
+        for (const auto& c : components_) {
+            if (c.num_owned_states() > 0) {
+                any_state_owner = true;
+                break;
+            }
+        }
+        if (!any_state_owner) {
+            throw ComponentError(
+                "ComposedModel::build: no component owns any state; "
+                "a composed model needs at least one state.");
         }
     }
 

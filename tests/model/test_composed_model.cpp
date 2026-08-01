@@ -278,6 +278,77 @@ TEST(ComposedModel, BuildCombinedDynamicsEvaluatesCorrectly) {
     EXPECT_DOUBLE_EQ(dx[0], -5.0);
 }
 
+// build() throws when no component owns any state (Important #1 guard).
+TEST(ComposedModel, BuildWithNoStateOwnerThrows) {
+    goss::model::ComposedModel composed;
+    // Add a component that only has a derived quantity — no owned states.
+    goss::model::Component comp("derived_only");
+    comp.add_derived(
+        "rate",
+        [](const auto& /*x*/, const auto& /*u*/,
+           const auto& /*d*/, double /*t*/) { return 1.0; });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto derived_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                              const auto& /*d*/, auto /*t*/) { return 1.0; };
+    // queue component dynamics — never reached but satisfies template signature
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{};
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+    EXPECT_THROW(composed.build(derived_lambda, dyn_lambda, cost_lambda),
+                 goss::model::ComponentError);
+}
+
+// build() cost lambda sees real derived values, not zero-filled placeholder (Important #2).
+// Fixture: derived d = 2 * x[0]; cost = d; so ocp.cost({x0}, {}, t) should equal 2 * x0.
+TEST(ComposedModel, BuildCostSeesDerivedValue) {
+    goss::model::ComposedModel composed;
+
+    // "queue" component: owns state "q"
+    goss::model::Component comp_queue("queue");
+    comp_queue.add_state("q");
+    comp_queue.set_dynamics(
+        [](const std::vector<double>& /*x*/,
+           const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/,
+           double /*t*/) {
+            return std::vector<double>{0.0};
+        });
+
+    composed.add_component(std::move(comp_queue));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    // derived d[0] = 2 * x[0]
+    auto derived_lambda = [](const auto& x, const auto& /*u*/,
+                              const auto& /*d*/, auto /*t*/) {
+        return x[0] * decltype(x[0])(2.0);
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        return std::vector<double>{0.0};
+    };
+    // cost = d[0]  (so cost should equal 2 * x[0])
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& d, auto /*t*/) {
+        return d[0];
+    };
+
+    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+
+    // Evaluate cost at x = [3.0], u = [], t = 0.0.
+    // Expected: d[0] = 2 * 3.0 = 6.0.
+    const double x0 = 3.0;
+    std::vector<double> x{x0};
+    std::vector<double> u{};
+    double result = ocp.cost(x, u, 0.0);
+    EXPECT_DOUBLE_EQ(result, 2.0 * x0);
+}
+
 // build() without mesh set throws.
 TEST(ComposedModel, BuildWithoutMeshThrows) {
     goss::model::ComposedModel composed;
