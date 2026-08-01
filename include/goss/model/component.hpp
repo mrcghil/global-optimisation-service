@@ -44,6 +44,9 @@ struct DerivedEntry {
         const std::vector<double>&,  // global u
         const std::vector<double>&,  // already-evaluated deriveds (topo order)
         double)> validation_fn;
+    /// Names of other derived quantities this entry explicitly depends on (declared via
+    /// input_derived() before the add_derived() call that produced this entry).
+    std::vector<std::string> dependency_names;
 };
 
 class Component {
@@ -96,7 +99,18 @@ class Component {
         owned_states_[owned_state_handle.index].final_fixed = true;
     }
 
+    /// Declare that the NEXT derived quantity added to this component depends on a named
+    /// derived quantity (by name). Must be called BEFORE the add_derived() call for the
+    /// dependent entry. The accumulated names are flushed into the entry on add_derived().
+    /// Returns a DerivedHandle with kUnresolvedIndex; the name is staged in a pending list.
+    DerivedHandle input_derived(const std::string& derived_name) {
+        pending_derived_input_names_.push_back(derived_name);
+        return DerivedHandle{kUnresolvedIndex};
+    }
+
     /// Register an inline derived quantity for validation (double-typed lambda).
+    /// Any names staged via input_derived() since the last add_derived() are attached to
+    /// this entry as declared dependencies, then the pending list is cleared.
     /// Returns a DerivedHandle for use inside this component's dynamics lambda.
     DerivedHandle add_derived(
         const std::string& derived_name,
@@ -106,7 +120,12 @@ class Component {
                              double)> validation_lambda) {
         ensure_name_unique_in_component(derived_name);
         const std::size_t local_index = derived_entries_.size();
-        derived_entries_.push_back(DerivedEntry{derived_name, std::move(validation_lambda)});
+        derived_entries_.push_back(DerivedEntry{
+            derived_name,
+            std::move(validation_lambda),
+            std::move(pending_derived_input_names_)  // flush dependency names into the entry
+        });
+        pending_derived_input_names_.clear();
         return DerivedHandle{local_index};
     }
 
@@ -145,6 +164,12 @@ class Component {
     const std::vector<DerivedEntry>& derived_entries() const { return derived_entries_; }
 
     const std::vector<std::string>& input_state_names() const { return input_state_names_; }
+
+    /// Returns names of derived quantities declared as inputs to any derived entry via
+    /// input_derived() calls that are still pending (not yet flushed into an entry).
+    const std::vector<std::string>& pending_derived_input_names() const {
+        return pending_derived_input_names_;
+    }
 
     bool has_dynamics() const { return has_dynamics_; }
 
@@ -209,6 +234,9 @@ class Component {
     std::vector<DerivedEntry> derived_entries_;
     /// Names declared as inputs (states owned by other components).
     std::vector<std::string> input_state_names_;
+    /// Staging area: derived names declared via input_derived() since the last add_derived().
+    /// Flushed into the next DerivedEntry's dependency_names on add_derived().
+    std::vector<std::string> pending_derived_input_names_;
 
     // Double-typed validation lambdas (AD path uses generic lambdas at build() time).
     std::function<std::vector<double>(const std::vector<double>&,
