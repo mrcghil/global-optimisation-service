@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <vector>
+#include "goss/transcription/mesh.hpp"
 #include "goss/transcription/trapezoidal.hpp"
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
@@ -82,4 +83,37 @@ TEST(Trapezoidal, FinalStateFreeWhenNotFixed) {
     // final_state_fixed[0] == 0.0 → not pinned → lower < upper
     EXPECT_LT(compiled.problem->variable_lower_bounds()[idx],
               compiled.problem->variable_upper_bounds()[idx]);
+}
+
+TEST(Trapezoidal, NonUniformMeshSolvesExponentialDecay) {
+    // Non-uniform mesh: denser nodes near t=0 where exp(-t) changes fastest.
+    const double x0 = 1.0;
+    auto ocp = goss::transcription::test::make_exponential_decay(x0, /*tf=*/1.0, /*intervals=*/1);
+    // ocp.mesh is unused — we pass a NonUniformMesh override.
+    goss::transcription::NonUniformMesh nu_mesh;
+    nu_mesh.node_times = {0.0, 0.05, 0.1, 0.2, 0.4, 0.7, 1.0};  // 6 intervals, non-uniform
+    auto compiled = goss::transcription::Trapezoidal::compile(ocp, nu_mesh, "trap_nu_expdecay");
+    goss::solver::IpoptSolver solver;
+    std::vector<double> z0(compiled.problem->num_variables(), x0);
+    auto result = solver.solve(*compiled.problem, z0);
+    ASSERT_EQ(result.status, goss::solver::SolverStatus::Success);
+    const auto& layout = compiled.layout;
+    std::size_t last = layout.num_nodes() - 1;
+    double x_final = result.x[layout.state_index(last, 0)];
+    EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-2);
+}
+
+TEST(Trapezoidal, UniformOverloadStillPassesAfterRefactor) {
+    // Regression: the uniform overload must still work identically after it
+    // is reimplemented as a thin wrapper around the non-uniform path.
+    const double x0 = 1.0;
+    auto ocp = goss::transcription::test::make_exponential_decay(x0, 1.0, 40);
+    auto compiled = goss::transcription::Trapezoidal::compile(ocp, "trap_uniform_regression");
+    goss::solver::IpoptSolver solver;
+    std::vector<double> z0(compiled.problem->num_variables(), x0);
+    auto result = solver.solve(*compiled.problem, z0);
+    ASSERT_EQ(result.status, goss::solver::SolverStatus::Success);
+    std::size_t last = compiled.layout.num_nodes() - 1;
+    double x_final = result.x[compiled.layout.state_index(last, 0)];
+    EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-3);
 }
