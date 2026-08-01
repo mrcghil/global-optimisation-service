@@ -23,7 +23,8 @@ struct ResolvedDerivedEntry {
     std::string name;
     std::size_t global_component_index;
     std::size_t local_derived_index;
-    /// Global derived indices this entry depends on (for topo-sort in Task 4).
+    /// Global derived indices this entry depends on (populated by topo-sort).
+    // Reserved for the variadic multi-derived follow-on; v1 build() evaluates the single derived directly.
     std::vector<std::size_t> dependency_global_derived_indices;
 };
 
@@ -158,15 +159,35 @@ class ComposedModel {
     auto build(Dyn0Fn component_0_dyn, CostFn combined_cost) {
         prepare_build();
 
+        // I2 guard: this overload handles exactly 0 derived quantities.
+        // A model with derived quantities must use the 1-derived overload (or variadic follow-on).
+        {
+            const std::size_t nd = total_num_derived();
+            if (nd != 0) {
+                throw ComponentError(
+                    "ComposedModel::build (0-derived overload): no derived quantities expected, "
+                    "found " + std::to_string(nd) +
+                    "; use the 1-derived overload / variadic follow-on.");
+            }
+        }
+
         // Snapshot per-component state layout (global offsets) before moving into lambdas.
         // Components are laid out contiguously in add_component() order.
         const std::size_t num_states  = total_num_states();
 
         // Per-component state offsets (component i starts at component_state_offsets[i]).
         std::vector<std::size_t> component_state_offsets = compute_component_state_offsets();
-        // For 1 component, grab offset directly.
-        const std::size_t comp0_offset = component_state_offsets[0];
-        const std::size_t comp0_nstates = components_[0].num_owned_states();
+        // Walk components to find the first state-owning component; do not hardwire index 0
+        // because a stateless component may be registered before the state-owning one (C1 fix).
+        std::size_t comp0_offset  = 0;
+        std::size_t comp0_nstates = 0;
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            if (components_[ci].num_owned_states() > 0) {
+                comp0_offset  = component_state_offsets[ci];
+                comp0_nstates = components_[ci].num_owned_states();
+                break;
+            }
+        }
 
         // Assemble combined dynamics — NO std::function in this lambda.
         // Both component_0_dyn and combined_cost are generic lambdas (template operator());
@@ -208,6 +229,18 @@ class ComposedModel {
     template <typename DerivedExpr0Fn, typename Dyn0Fn, typename CostFn>
     auto build(DerivedExpr0Fn derived_expr_0, Dyn0Fn component_0_dyn, CostFn combined_cost) {
         prepare_build();
+
+        // I2 guard: this overload handles exactly 1 derived quantity.
+        // A model with 0 or 2+ derived quantities must use the matching overload / variadic follow-on.
+        {
+            const std::size_t nd = total_num_derived();
+            if (nd != 1) {
+                throw ComponentError(
+                    "ComposedModel::build (1-derived overload): exactly 1 derived quantity expected, "
+                    "found " + std::to_string(nd) +
+                    "; variadic overload for 2+ is a follow-on.");
+            }
+        }
 
         const std::size_t num_states   = total_num_states();
         const std::size_t num_deriveds = 1;  // exactly one derived expression
@@ -447,19 +480,38 @@ class ComposedModel {
         if (!mesh_set_) {
             throw ModelError("ComposedModel::build: call set_mesh() before build()");
         }
-        // A composed OCP needs at least one component that owns a state; without one the
-        // combined dynamics would write nothing and produce a silently-empty problem.
-        bool any_state_owner = false;
-        for (const auto& c : components_) {
-            if (c.num_owned_states() > 0) {
-                any_state_owner = true;
-                break;
+        // I1 guard: count state-owning components. v1 supports exactly one;
+        // multi-component dynamics (>1 state owner) is a deferred variadic follow-on.
+        {
+            std::size_t num_state_owners = 0;
+            for (const auto& c : components_) {
+                if (c.num_owned_states() > 0) {
+                    ++num_state_owners;
+                }
+            }
+            if (num_state_owners == 0) {
+                throw ComponentError(
+                    "ComposedModel::build: no component owns any state; "
+                    "a composed model needs at least one state.");
+            }
+            if (num_state_owners > 1) {
+                throw ComponentError(
+                    "ComposedModel::build: v1 supports exactly 1 state-owning component; found " +
+                    std::to_string(num_state_owners) +
+                    ". Multi-component dynamics is a variadic follow-on.");
             }
         }
-        if (!any_state_owner) {
-            throw ComponentError(
-                "ComposedModel::build: no component owns any state; "
-                "a composed model needs at least one state.");
+
+        // I3 guard: detect dangling input_derived() calls (input_derived() was called
+        // without a following add_derived(), leaving pending dependency names unflushed).
+        for (const auto& c : components_) {
+            if (!c.pending_derived_input_names().empty()) {
+                throw ComponentError(
+                    "ComposedModel::build: component '" + c.component_name() +
+                    "' has " + std::to_string(c.pending_derived_input_names().size()) +
+                    " pending input_derived() name(s) that were never consumed by add_derived(). "
+                    "Call add_derived() after each input_derived() sequence.");
+            }
         }
         // Use the stored double-typed validation lambdas to verify that each component's
         // dynamics returns the correct number of derivatives (== num_owned_states).

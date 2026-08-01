@@ -309,9 +309,17 @@ TEST(ComposedModel, BuildWithNoStateOwnerThrows) {
 TEST(ComposedModel, BuildCostSeesDerivedValue) {
     goss::model::ComposedModel composed;
 
-    // "queue" component: owns state "q"
+    // "queue" component: owns state "q" and registers one derived quantity "d_val".
+    // The derived must be registered with add_derived() so that total_num_derived()==1,
+    // matching the 3-arg (1-derived) build() overload's I2 guard.
     goss::model::Component comp_queue("queue");
     comp_queue.add_state("q");
+    comp_queue.add_derived(
+        "d_val",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) {
+            return x[0] * 2.0;  // validation lambda: d_val = 2 * q
+        });
     comp_queue.set_dynamics(
         [](const std::vector<double>& /*x*/,
            const std::vector<double>& /*u*/,
@@ -323,7 +331,7 @@ TEST(ComposedModel, BuildCostSeesDerivedValue) {
     composed.add_component(std::move(comp_queue));
     composed.set_mesh(0.0, 1.0, 4);
 
-    // derived d[0] = 2 * x[0]
+    // Generic derived lambda for the AD path: d[0] = 2 * x[0]
     auto derived_lambda = [](const auto& x, const auto& /*u*/,
                               const auto& /*d*/, auto /*t*/) {
         return x[0] * decltype(x[0])(2.0);
@@ -419,6 +427,161 @@ TEST(ComposedModel, AssembledDynamicsEvaluatesCorrectlyUnderDouble) {
     auto dx = ocp.dynamics(x_test, u_test, 0.0);
     ASSERT_EQ(dx.size(), 1u);
     EXPECT_DOUBLE_EQ(dx[0], -6.0);  // -2 * 3.0
+}
+
+// ---- Final-review regression tests ----
+
+// C1 regression: 0-derived build() with a STATELESS component registered BEFORE the
+// state-owning component. Before the fix, comp0_offset/comp0_nstates were always taken
+// from components_[0], which here is the stateless component → dx written to wrong slot
+// (or incorrectly sized). After the fix, the find-first-state-owner loop picks the
+// queue component at index 1, and dynamics must be non-zero / correct.
+TEST(ComposedModel, ZeroDerivedStateOwnerNotFirst) {
+    goss::model::ComposedModel composed;
+
+    // Stateless component registered FIRST — no owned states, no dynamics.
+    goss::model::Component stateless("stateless");
+    // (no add_state, no set_dynamics)
+
+    // State-owning component registered SECOND.
+    goss::model::Component queue("queue");
+    auto q_handle = queue.add_state("q");
+    queue.set_initial_state(q_handle, 0.0);
+    // dx/dt = 2.0 (non-zero constant — so any dynamics eval should return 2.0)
+    queue.set_dynamics(
+        [](const std::vector<double>& /*x*/,
+           const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/,
+           double /*t*/) {
+            return std::vector<double>{ 2.0 };
+        });
+
+    composed.add_component(std::move(stateless));
+    composed.add_component(std::move(queue));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    // Generic AD-safe dynamics lambda.
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(2.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+
+    // build() must succeed and assembled dynamics must be non-zero.
+    auto ocp = composed.build(dyn_lambda, cost_lambda);
+
+    // Evaluate assembled dynamics at x={0.0}, u={}, t=0.0.
+    // The state-owning component sits at global state offset 0 (the stateless
+    // component contributes 0 states). dx[0] must equal 2.0.
+    std::vector<double> x_test{0.0}, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    // C1 fix verification: dx[0] must be 2.0 (non-zero); before the fix it would be 0.0
+    // because the stateless component has no dynamics output mapped to offset 0.
+    EXPECT_DOUBLE_EQ(dx[0], 2.0);
+}
+
+// I1 regression: two components each owning a state → build() must throw ComponentError.
+TEST(ComposedModel, MultipleStateOwnersThrows) {
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp_a("a");
+    comp_a.add_state("x");
+    comp_a.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 0.0 };
+        });
+
+    goss::model::Component comp_b("b");
+    comp_b.add_state("y");
+    comp_b.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 0.0 };
+        });
+
+    composed.add_component(std::move(comp_a));
+    composed.add_component(std::move(comp_b));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(0.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
+}
+
+// I2 regression: calling the 0-derived build() on a model that has 1 derived → throws.
+TEST(ComposedModel, WrongDerivedCountForOverloadThrows) {
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("q");
+    comp.add_derived(
+        "rate",
+        [](const auto& /*x*/, const auto& /*u*/,
+           const auto& /*d*/, double /*t*/) { return 1.0; });
+    comp.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 0.0 };
+        });
+
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    // Use the 2-arg (0-derived) overload on a model with 1 derived → I2 must throw.
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(0.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
+}
+
+// I3 regression: a component that calls input_derived("x") but never calls add_derived →
+// the pending name is never flushed, and build() must throw ComponentError.
+TEST(ComposedModel, DanglingInputDerivedThrows) {
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("q");
+    // input_derived declares a dependency for the NEXT add_derived() call, but we never
+    // call add_derived() — so the name stays in the pending list (dangling).
+    comp.input_derived("some_derived");
+    comp.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 0.0 };
+        });
+
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(0.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
 }
 
 // build() without mesh set throws.
