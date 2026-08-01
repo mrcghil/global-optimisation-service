@@ -455,6 +455,43 @@ class ComposedModel {
                 "ComposedModel::build: no component owns any state; "
                 "a composed model needs at least one state.");
         }
+        // Use the stored double-typed validation lambdas to verify that each component's
+        // dynamics returns the correct number of derivatives (== num_owned_states).
+        // This runs BEFORE any AD codegen in build_internal_model(), using zero-filled
+        // probe inputs of the correct global sizes to catch dimension mismatches early.
+        validate_dynamics_dimensions();
+    }
+
+    /// For each component that has a dynamics lambda registered, call evaluate_dynamics()
+    /// with zero-filled double vectors of the correct global sizes, and verify the returned
+    /// vector's size equals num_owned_states() for that component.
+    /// Throws ComponentError if there is a dimension mismatch.
+    void validate_dynamics_dimensions() const {
+        const std::size_t num_states   = total_num_states();
+        const std::size_t num_controls = control_names_.size();
+        // Probe with zero-filled global x, u, and deriveds vectors.
+        const std::vector<double> probe_x(num_states, 0.0);
+        const std::vector<double> probe_u(num_controls, 0.0);
+        const std::size_t num_deriveds = total_num_derived();
+        const std::vector<double> probe_deriveds(num_deriveds, 0.0);
+        constexpr double probe_t = 0.0;
+
+        for (const auto& component : components_) {
+            if (!component.has_dynamics()) {
+                // Components without dynamics do not contribute to dx; skip.
+                continue;
+            }
+            const std::size_t expected = component.num_owned_states();
+            const auto result = component.evaluate_dynamics(
+                probe_x, probe_u, probe_deriveds, probe_t);
+            const std::size_t got = result.size();
+            if (got != expected) {
+                throw ComponentError(
+                    "Component '" + component.component_name() +
+                    "': dynamics lambda returns " + std::to_string(got) +
+                    " values but component owns " + std::to_string(expected) + " states");
+            }
+        }
     }
 
     /// Compute the global state offset for each component (components laid out contiguously

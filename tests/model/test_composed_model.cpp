@@ -349,6 +349,78 @@ TEST(ComposedModel, BuildCostSeesDerivedValue) {
     EXPECT_DOUBLE_EQ(result, 2.0 * x0);
 }
 
+// ---- Task 6: pre-build dynamics dimension validation tests ----
+
+// A component whose dynamics lambda returns the wrong number of derivatives throws
+// ComponentError at build() time (before any AD codegen).
+TEST(ComposedModel, DynamicsDimensionMismatchThrows) {
+    goss::model::ComposedModel composed;
+    composed.add_control("u", 0.0, 1.0);
+    goss::model::Component component("c");
+    component.add_state("x");
+    // Validation lambda returns 2 values but only 1 state owned — mismatch.
+    component.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 1.0, 2.0 };  // wrong size
+        });
+    composed.add_component(std::move(component));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(1.0), T(2.0) };  // still wrong size
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return 0.0; };
+    EXPECT_THROW(
+        composed.build(dyn_lambda, cost_lambda),
+        goss::model::ComponentError);
+}
+
+// A composed model whose dynamics lambda returns the CORRECT number of derivatives does NOT throw.
+TEST(ComposedModel, AssembledDynamicsEvaluatesCorrectlyUnderDouble) {
+    // Build a simple 1-state composed model and verify the dynamics value.
+    goss::model::ComposedModel composed;
+    goss::model::Component component("c");
+    component.add_state("x");
+    component.add_derived(
+        "d_val",
+        [](const auto& x, const auto& /*u*/,
+           const auto& /*prev_deriveds*/, double /*t*/) {
+            return x[0] * 2.0;
+        });
+    component.set_dynamics(
+        [](const std::vector<double>& /*x*/,
+           const std::vector<double>& /*u*/,
+           const std::vector<double>& d,
+           double /*t*/) {
+            return std::vector<double>{ -d[0] };  // dx/dt = -d_val = -2x
+        });
+    composed.add_component(std::move(component));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto derived_lambda = [](const auto& x, const auto& /*u*/,
+                              const auto& /*prev_d*/, auto /*t*/) {
+        return x[0] * decltype(x[0]){2.0};
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return std::vector<T>{ -d[0] };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return 0.0; };
+
+    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+    // Evaluate assembled dynamics at x={3.0}, u={}, t=0.
+    std::vector<double> x_test{3.0}, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    EXPECT_DOUBLE_EQ(dx[0], -6.0);  // -2 * 3.0
+}
+
 // build() without mesh set throws.
 TEST(ComposedModel, BuildWithoutMeshThrows) {
     goss::model::ComposedModel composed;
