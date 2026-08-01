@@ -124,8 +124,10 @@ struct DynamicsFunctor {
 /// DynTuple grows with each with_dynamics() call — each call returns a NEW
 /// ExprModel<NewDynTuple, CostFn> type (moving model_/dyn_tuple_/cost_fn_ in).
 /// CostFn defaults to std::monostate (sentinel for "no cost set") and is
-/// replaced by with_cost(). build() static_asserts that CostFn != std::monostate
-/// so a missing with_cost() is a compile-time error.
+/// replaced by with_cost(). build() uses `if constexpr` to detect CostFn ==
+/// std::monostate at compile time and throws ExprError at runtime in that
+/// branch — a missing with_cost() is therefore a runtime error (not a
+/// compile-time static_assert).
 ///
 /// Usage:
 ///   goss::model::expr::ExprModel<> m;

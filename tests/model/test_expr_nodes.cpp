@@ -6,7 +6,6 @@
 // CppAD is available via goss_model -> goss_transcription -> goss_nlp -> goss_ad -> cppadcg
 #include <cppad/cppad.hpp>
 #include <vector>
-#include <cmath>
 
 TEST(ExprError, IsThrowableAndCarriesMessage) {
     try {
