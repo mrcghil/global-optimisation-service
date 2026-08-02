@@ -79,7 +79,10 @@ TEST(CompositionSolve, QueueModelWithDerivedServiceRate) {
         return x[0] + T(WEIGHT) * u[0] * u[0];
     };
 
-    auto ocp = composed.build(service_rate_expr, queue_dynamics, combined_cost);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(service_rate_expr),
+        goss::model::make_component_dyns(queue_dynamics),
+        combined_cost);
 
     // Solve via HermiteSimpson + IpoptSolver — identical pipeline to monolithic test.
     auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "composed_queue");

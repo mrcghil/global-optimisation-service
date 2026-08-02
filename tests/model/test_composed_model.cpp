@@ -171,7 +171,10 @@ TEST(ComposedModel, BuildProducesOcpProblemWithCorrectDimensions) {
         return x[0];
     };
 
-    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
     EXPECT_EQ(ocp.num_states, 1u);
     EXPECT_EQ(ocp.num_controls, 1u);
     EXPECT_EQ(ocp.mesh.num_intervals, 5u);
@@ -208,8 +211,11 @@ TEST(ComposedModel, BuildForwardsBoundsFromComponents) {
         return T(0.0);
     };
 
-    // No derived quantities → build with 0 derived lambdas: use the 0-derived overload
-    auto ocp = composed.build(dyn_lambda, cost_lambda);
+    // No derived quantities → build with 0 derived lambdas via variadic overload.
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
     EXPECT_EQ(ocp.num_states, 1u);
     EXPECT_EQ(ocp.num_controls, 1u);
     EXPECT_EQ(ocp.state_lower[0], 0.0);
@@ -267,7 +273,10 @@ TEST(ComposedModel, BuildCombinedDynamicsEvaluatesCorrectly) {
         return double(0.0);
     };
 
-    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
 
     // Evaluate combined dynamics at x = [3.0], u = [0.0], t = 0.0.
     // Expected: rate = 3.0 * 2.0 = 6.0;  dx/dt[0] = 1.0 - 6.0 = -5.0.
@@ -300,8 +309,12 @@ TEST(ComposedModel, BuildWithNoStateOwnerThrows) {
     };
     auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
                            const auto& /*d*/, auto /*t*/) { return double(0.0); };
-    EXPECT_THROW(composed.build(derived_lambda, dyn_lambda, cost_lambda),
-                 goss::model::ComponentError);
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(derived_lambda),
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
+        goss::model::ComponentError);
 }
 
 // build() cost lambda sees real derived values, not zero-filled placeholder (Important #2).
@@ -346,7 +359,10 @@ TEST(ComposedModel, BuildCostSeesDerivedValue) {
         return d[0];
     };
 
-    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
 
     // Evaluate cost at x = [3.0], u = [], t = 0.0.
     // Expected: d[0] = 2 * 3.0 = 6.0.
@@ -383,7 +399,10 @@ TEST(ComposedModel, DynamicsDimensionMismatchThrows) {
     auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
                            const auto& /*d*/, auto /*t*/) { return 0.0; };
     EXPECT_THROW(
-        composed.build(dyn_lambda, cost_lambda),
+        composed.build(
+            goss::model::make_derived_exprs(),
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
         goss::model::ComponentError);
 }
 
@@ -421,7 +440,10 @@ TEST(ComposedModel, AssembledDynamicsEvaluatesCorrectlyUnderDouble) {
     auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
                            const auto& /*d*/, auto /*t*/) { return 0.0; };
 
-    auto ocp = composed.build(derived_lambda, dyn_lambda, cost_lambda);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
     // Evaluate assembled dynamics at x={3.0}, u={}, t=0.
     std::vector<double> x_test{3.0}, u_test{};
     auto dx = ocp.dynamics(x_test, u_test, 0.0);
@@ -472,7 +494,10 @@ TEST(ComposedModel, ZeroDerivedStateOwnerNotFirst) {
     };
 
     // build() must succeed and assembled dynamics must be non-zero.
-    auto ocp = composed.build(dyn_lambda, cost_lambda);
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
 
     // Evaluate assembled dynamics at x={0.0}, u={}, t=0.0.
     // The state-owning component sits at global state offset 0 (the stateless
@@ -485,8 +510,10 @@ TEST(ComposedModel, ZeroDerivedStateOwnerNotFirst) {
     EXPECT_DOUBLE_EQ(dx[0], 2.0);
 }
 
-// I1 regression: two components each owning a state → build() must throw ComponentError.
-TEST(ComposedModel, MultipleStateOwnersThrows) {
+// Task 2: the old I1 upper-bound guard (>1 state owner throws) is REMOVED.
+// Two state-owning components now build SUCCESSFULLY when one dynamics lambda is provided
+// per state-owning component (in component registration order).
+TEST(ComposedModel, MultipleStateOwnersBuildSucceeds) {
     goss::model::ComposedModel composed;
 
     goss::model::Component comp_a("a");
@@ -494,7 +521,7 @@ TEST(ComposedModel, MultipleStateOwnersThrows) {
     comp_a.set_dynamics(
         [](const std::vector<double>&, const std::vector<double>&,
            const std::vector<double>&, double) {
-            return std::vector<double>{ 0.0 };
+            return std::vector<double>{ 1.0 };
         });
 
     goss::model::Component comp_b("b");
@@ -502,23 +529,34 @@ TEST(ComposedModel, MultipleStateOwnersThrows) {
     comp_b.set_dynamics(
         [](const std::vector<double>&, const std::vector<double>&,
            const std::vector<double>&, double) {
-            return std::vector<double>{ 0.0 };
+            return std::vector<double>{ 2.0 };
         });
 
     composed.add_component(std::move(comp_a));
     composed.add_component(std::move(comp_b));
     composed.set_mesh(0.0, 1.0, 3);
 
-    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
-                          const auto& /*d*/, auto /*t*/) {
+    // Provide one dynamics lambda per state-owning component (comp_a first, comp_b second).
+    auto dyn_a = [](const auto& /*x*/, const auto& /*u*/,
+                    const auto& /*d*/, auto /*t*/) {
         using T = double;
-        return std::vector<T>{ T(0.0) };
+        return std::vector<T>{ T(1.0) };
+    };
+    auto dyn_b = [](const auto& /*x*/, const auto& /*u*/,
+                    const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(2.0) };
     };
     auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
                            const auto& /*d*/, auto /*t*/) {
         return double(0.0);
     };
-    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
+    // Two state-owning components are now VALID — build() must succeed.
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_a, dyn_b),
+        cost_lambda);
+    EXPECT_EQ(ocp.num_states, 2u);
 }
 
 // I2 regression: calling the 0-derived build() on a model that has 1 derived → throws.
@@ -540,7 +578,8 @@ TEST(ComposedModel, WrongDerivedCountForOverloadThrows) {
     composed.add_component(std::move(comp));
     composed.set_mesh(0.0, 1.0, 3);
 
-    // Use the 2-arg (0-derived) overload on a model with 1 derived → I2 must throw.
+    // Use variadic build() providing 0 derived-expr lambdas for a model with 1 derived
+    // → I2 guard must throw ComponentError.
     auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
                           const auto& /*d*/, auto /*t*/) {
         using T = double;
@@ -550,7 +589,12 @@ TEST(ComposedModel, WrongDerivedCountForOverloadThrows) {
                            const auto& /*d*/, auto /*t*/) {
         return double(0.0);
     };
-    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(),      // wrong: 0 provided, 1 needed
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
+        goss::model::ComponentError);
 }
 
 // I3 regression: a component that calls input_derived("x") but never calls add_derived →
@@ -581,7 +625,12 @@ TEST(ComposedModel, DanglingInputDerivedThrows) {
                            const auto& /*d*/, auto /*t*/) {
         return double(0.0);
     };
-    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(),
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
+        goss::model::ComponentError);
 }
 
 // ---- Task 1 (composition-quickwins): variadic helper compile+size tests ----
@@ -633,5 +682,144 @@ TEST(ComposedModel, BuildWithoutMeshThrows) {
                            const auto& /*d*/, auto /*t*/) {
         return double(0.0);
     };
-    EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ModelError);
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(),
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
+        goss::model::ModelError);
+}
+
+// ---- Task 2: variadic build() tests ----
+
+// Task 2 — variadic build() with 0 derived and 1 state-owning component.
+TEST(ComposedModelVariadic, ZeroDerivedOneDynBuildSucceeds) {
+    goss::model::ComposedModel composed;
+    composed.add_control("u", 0.0, 5.0);
+
+    goss::model::Component comp("c");
+    auto q_handle = comp.add_state("q");
+    comp.set_initial_state(q_handle, 1.0);
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/,
+           const std::vector<double>& u,
+           const std::vector<double>& /*d*/,
+           double /*t*/) {
+            return std::vector<double>{ u[0] };
+        });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto dyn_lambda = [](const auto& /*x*/, const auto& u,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = typename std::decay_t<decltype(u)>::value_type;
+        return std::vector<T>{ u[0] };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
+    EXPECT_EQ(ocp.num_states, 1u);
+    EXPECT_EQ(ocp.num_controls, 1u);
+}
+
+// Task 2 — variadic build() with 1 derived and 1 state-owning component.
+TEST(ComposedModelVariadic, OneDerivedOneDynBuildSucceeds) {
+    goss::model::ComposedModel composed;
+    composed.add_control("u", 0.0, 5.0);
+
+    goss::model::Component comp("c");
+    comp.add_state("q");
+    comp.add_derived(
+        "d_val",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return x[0] * 2.0; });
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) {
+            return std::vector<double>{ -d[0] };
+        });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto derived_lambda = [](const auto& x, const auto& /*u*/,
+                              const auto& /*d*/, auto /*t*/) {
+        return x[0] * decltype(x[0])(2.0);
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return std::vector<T>{ -d[0] };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) {
+        return double(0.0);
+    };
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
+    EXPECT_EQ(ocp.num_states, 1u);
+
+    std::vector<double> x_test{ 3.0 }, u_test{ 0.0 };
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    EXPECT_DOUBLE_EQ(dx[0], -6.0);  // -2 * 3.0
+}
+
+// Task 2 — guard: wrong number of derived-expr lambdas throws ComponentError.
+TEST(ComposedModelVariadic, WrongDerivedExprCountThrows) {
+    goss::model::ComposedModel composed;
+    goss::model::Component comp("c");
+    comp.add_state("q");
+    comp.add_derived(
+        "d_val",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return x[0]; });
+    comp.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) { return std::vector<double>{ 0.0 }; });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    // Provide 0 derived-expr lambdas but model has 1 derived → guard must throw.
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(0.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return 0.0; };
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(),      // wrong: 0 provided, 1 needed
+            goss::model::make_component_dyns(dyn_lambda),
+            cost_lambda),
+        goss::model::ComponentError);
+}
+
+// Task 2 — guard: wrong number of dynamics lambdas throws ComponentError.
+TEST(ComposedModelVariadic, WrongDynLambdaCountThrows) {
+    goss::model::ComposedModel composed;
+    goss::model::Component comp("c");
+    comp.add_state("q");
+    comp.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) { return std::vector<double>{ 0.0 }; });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    // Provide 0 dyn lambdas but model has 1 state-owning component → guard must throw.
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return 0.0; };
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(),
+            goss::model::make_component_dyns(),     // wrong: 0 provided, 1 needed
+            cost_lambda),
+        goss::model::ComponentError);
 }

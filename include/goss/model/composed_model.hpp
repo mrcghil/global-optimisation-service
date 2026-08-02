@@ -275,176 +275,120 @@ class ComposedModel {
         return it->second;
     }
 
-    // ---- Task 5: build() overloads ----
+    // ---- Task 5 / Task 2 (composition-quickwins): single variadic build() ----
     //
     // NOTE — Algebraic-variable (DAE) flavor is NOT implemented in v1.
     // See component.hpp "FOLLOW-ON: Algebraic-variable flavor" for the full design note.
     // When Flavor 2 is implemented, build() will additionally collect algebraic entries
     // from all components, extend the OcpProblem with algebraic_residuals/num_algebraic,
     // and route them through the transcription defect machinery.
-    //
-    // Convention for argument ordering:
-    //   1. All derived-expression generic lambdas in topological order
-    //      (signature: (const auto& x, const auto& u, const auto& deriveds_so_far, auto t) -> T)
-    //   2. One dynamics generic lambda per component in add_component() registration order
-    //      (signature: (const auto& x, const auto& u, const auto& deriveds, auto t) -> vector<T>)
-    //   3. One combined cost generic lambda
-    //      (signature: (const auto& x, const auto& u, const auto& deriveds, auto t) -> T)
-    //
-    // All lambdas are captured by VALUE into a std::tuple inside the assembled combined closure;
-    // no std::function is in the AD path.
 
-    /// Overload for 0 derived expressions and exactly 1 component dynamics lambda.
+    /// Variadic build(): supports any number of derived-expression lambdas and any number
+    /// of per-component dynamics lambdas. This is the single unified build() overload
+    /// that supersedes the v1 0-derived and 1-derived overloads.
     ///
-    /// Combined dynamics functor: evaluates component_0_dyn, writes into global dx slots.
-    /// Combined cost functor: forwards (x, u, {}, t) to the cost lambda.
-    template <typename Dyn0Fn, typename CostFn>
-    auto build(Dyn0Fn component_0_dyn, CostFn combined_cost) {
+    /// Argument ordering:
+    ///   1. derived_expr_tuple — wrap with make_derived_exprs(expr0, expr1, ...) in topo order
+    ///      (signature per expr: (const auto& x, const auto& u, const auto& deps_so_far, auto t) -> T)
+    ///   2. component_dyn_tuple — wrap with make_component_dyns(dyn0, dyn1, ...) in
+    ///      component registration order, ONE lambda per state-owning component
+    ///      (signature per dyn: (const auto& x, const auto& u, const auto& deriveds, auto t) -> vector<T>)
+    ///   3. combined_cost — ONE lambda: (const auto& x, const auto& u, const auto& deriveds, auto t) -> T
+    ///
+    /// Guards (all throw ComponentError):
+    ///   I1: zero state-owning components
+    ///   I_dyn: number of lambdas in component_dyn_tuple != number of state-owning components
+    ///   I2: number of lambdas in derived_expr_tuple != total_num_derived()
+    ///   I3 (from prepare_build): dangling input_derived() names not consumed by add_derived()
+    ///   Dimension mismatch: from validate_dynamics_dimensions()
+    template <typename DerivedTuple, typename DynTuple, typename CostFn>
+    auto build(DerivedTuple derived_expr_tuple,
+               DynTuple     component_dyn_tuple,
+               CostFn       combined_cost) {
         prepare_build();
 
-        // I2 guard: this overload handles exactly 0 derived quantities.
-        // A model with derived quantities must use the 1-derived overload (or variadic follow-on).
+        // I2 guard: number of derived-expr lambdas must equal total derived quantities declared.
         {
-            const std::size_t nd = total_num_derived();
-            if (nd != 0) {
+            const std::size_t num_provided_derived_exprs = std::tuple_size_v<DerivedTuple>;
+            const std::size_t num_declared_deriveds      = topo_ordered_deriveds_.size();
+            if (num_provided_derived_exprs != num_declared_deriveds) {
                 throw ComponentError(
-                    "ComposedModel::build (0-derived overload): no derived quantities expected, "
-                    "found " + std::to_string(nd) +
-                    "; use the 1-derived overload / variadic follow-on.");
+                    "ComposedModel::build: " +
+                    std::to_string(num_declared_deriveds) +
+                    " derived quantity/ies declared across all components, but " +
+                    std::to_string(num_provided_derived_exprs) +
+                    " derived-expression lambda(s) provided to build(). "
+                    "Wrap derived lambdas with make_derived_exprs(...) in topological order.");
             }
         }
 
-        // Snapshot per-component state layout (global offsets) before moving into lambdas.
-        // Components are laid out contiguously in add_component() order.
-        const std::size_t num_states  = total_num_states();
-
-        // Per-component state offsets (component i starts at component_state_offsets[i]).
-        std::vector<std::size_t> component_state_offsets = compute_component_state_offsets();
-        // Walk components to find the first state-owning component; do not hardwire index 0
-        // because a stateless component may be registered before the state-owning one (C1 fix).
-        std::size_t comp0_offset  = 0;
-        std::size_t comp0_nstates = 0;
-        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
-            if (components_[ci].num_owned_states() > 0) {
-                comp0_offset  = component_state_offsets[ci];
-                comp0_nstates = components_[ci].num_owned_states();
-                break;
-            }
-        }
-
-        // Assemble combined dynamics — NO std::function in this lambda.
-        // Both component_0_dyn and combined_cost are generic lambdas (template operator());
-        // capturing them by value preserves full template instantiation at CppAD recording time.
-        auto combined_dynamics = [
-            component_0_dyn,
-            num_states,
-            comp0_offset,
-            comp0_nstates
-        ](const auto& x, const auto& u, auto t) {
-            using T = typename std::decay_t<decltype(x)>::value_type;
-            // No derived quantities in this overload: pass empty deriveds vector.
-            std::vector<T> deriveds;
-            std::vector<T> dx(num_states);
-            auto comp0_dx = component_0_dyn(x, u, deriveds, t);
-            for (std::size_t i = 0; i < comp0_nstates; ++i) {
-                dx[comp0_offset + i] = comp0_dx[i];
-            }
-            return dx;
-        };
-
-        // Wrap cost so the stored signature matches what Model::build expects:
-        // OcpProblem cost signature is (x, u, t) but our combined cost takes (x, u, deriveds, t).
-        auto ocp_cost = [combined_cost](const auto& x, const auto& u, auto t) {
-            using T = typename std::decay_t<decltype(x)>::value_type;
-            std::vector<T> deriveds;
-            return combined_cost(x, u, deriveds, t);
-        };
-
-        return build_internal_model(std::move(combined_dynamics), std::move(ocp_cost));
-    }
-
-    /// Overload for exactly 1 derived-expression lambda and 1 component dynamics lambda.
-    ///
-    /// Combined dynamics functor:
-    ///   1. Evaluates derived_expr_0(x, u, {}, t) → deriveds[0]   (topo index 0, no deps)
-    ///   2. Calls component_0_dyn(x, u, deriveds, t) → comp0_dx
-    ///   3. Writes comp0_dx into global dx at component 0's state offset.
-    template <typename DerivedExpr0Fn, typename Dyn0Fn, typename CostFn>
-    auto build(DerivedExpr0Fn derived_expr_0, Dyn0Fn component_0_dyn, CostFn combined_cost) {
-        prepare_build();
-
-        // I2 guard: this overload handles exactly 1 derived quantity.
-        // A model with 0 or 2+ derived quantities must use the matching overload / variadic follow-on.
+        // I_dyn guard: number of dynamics lambdas must equal number of state-owning components.
         {
-            const std::size_t nd = total_num_derived();
-            if (nd != 1) {
+            std::size_t num_state_owning_components = 0;
+            for (const auto& component : components_) {
+                if (component.num_owned_states() > 0) {
+                    ++num_state_owning_components;
+                }
+            }
+            const std::size_t num_provided_dyn_lambdas = std::tuple_size_v<DynTuple>;
+            if (num_provided_dyn_lambdas != num_state_owning_components) {
                 throw ComponentError(
-                    "ComposedModel::build (1-derived overload): exactly 1 derived quantity expected, "
-                    "found " + std::to_string(nd) +
-                    "; variadic overload for 2+ is a follow-on.");
+                    "ComposedModel::build: " +
+                    std::to_string(num_state_owning_components) +
+                    " state-owning component(s), but " +
+                    std::to_string(num_provided_dyn_lambdas) +
+                    " dynamics lambda(s) provided to build(). "
+                    "Wrap dynamics lambdas with make_component_dyns(...) in component registration order.");
             }
         }
 
-        const std::size_t num_states   = total_num_states();
-        const std::size_t num_deriveds = 1;  // exactly one derived expression
-
-        std::vector<std::size_t> component_state_offsets = compute_component_state_offsets();
-
-        // Determine which component owns state slots — find the first component with owned states.
-        // For the 1-component-with-states layout, walk components to find it.
-        std::size_t comp0_offset  = 0;
-        std::size_t comp0_nstates = 0;
-        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
-            if (components_[ci].num_owned_states() > 0) {
-                comp0_offset  = component_state_offsets[ci];
-                comp0_nstates = components_[ci].num_owned_states();
-                break;
+        // Build the vectors of offsets and sizes for state-owning components in
+        // component registration order — these are stored in ComposedDynamicsFunctor
+        // and used inside its evaluate_dyns_impl to place each component's dx into
+        // the correct global slots.
+        const std::vector<std::size_t> all_component_state_offsets =
+            compute_component_state_offsets();
+        std::vector<std::size_t> state_owning_component_offsets;
+        std::vector<std::size_t> state_owning_component_num_states;
+        for (std::size_t component_idx = 0; component_idx < components_.size(); ++component_idx) {
+            const std::size_t n_owned = components_[component_idx].num_owned_states();
+            if (n_owned > 0) {
+                state_owning_component_offsets.push_back(all_component_state_offsets[component_idx]);
+                state_owning_component_num_states.push_back(n_owned);
             }
         }
 
-        // Assemble combined dynamics lambda — generic, captures all lambdas by value.
-        // No std::function in this path; both derived_expr_0 and component_0_dyn are
-        // generic lambdas whose operator() is a function template.
-        auto combined_dynamics = [
-            derived_expr_0,
-            component_0_dyn,
-            num_states,
-            num_deriveds,
-            comp0_offset,
-            comp0_nstates
-        ](const auto& x, const auto& u, auto t) {
-            using T = typename std::decay_t<decltype(x)>::value_type;
-            // Step 1: evaluate all derived quantities in topological order.
-            // For topo index 0 with no declared deps, deriveds_so_far is empty.
-            std::vector<T> deriveds(num_deriveds);
-            {
-                std::vector<T> deriveds_so_far;  // empty: topo index 0 has no dependencies
-                deriveds[0] = derived_expr_0(x, u, deriveds_so_far, t);
-            }
-            // Step 2: assemble global dx vector.
-            std::vector<T> dx(num_states);
-            auto comp0_dx = component_0_dyn(x, u, deriveds, t);
-            for (std::size_t i = 0; i < comp0_nstates; ++i) {
-                dx[comp0_offset + i] = comp0_dx[i];
-            }
-            return dx;
+        // Build the dependency-indices vector from topo_ordered_deriveds_ — one inner
+        // vector per derived entry, containing the topo-global indices of its dependencies.
+        std::vector<std::vector<std::size_t>> derived_dependency_indices;
+        derived_dependency_indices.reserve(topo_ordered_deriveds_.size());
+        for (const auto& resolved_entry : topo_ordered_deriveds_) {
+            derived_dependency_indices.push_back(
+                resolved_entry.dependency_global_derived_indices);
+        }
+
+        const std::size_t num_global_states = total_num_states();
+
+        // Assemble combined dynamics functor — no std::function in this path.
+        // ComposedDynamicsFunctor captures all lambdas by value inside the tuple.
+        auto combined_dynamics = ComposedDynamicsFunctor<DerivedTuple, DynTuple>{
+            derived_expr_tuple,
+            component_dyn_tuple,
+            num_global_states,
+            state_owning_component_offsets,
+            state_owning_component_num_states,
+            derived_dependency_indices
         };
 
-        // Wrap cost to conform to OcpProblem's (x, u, t) signature.
-        // Re-evaluate derived quantities in topo order (mirroring the dynamics path) so
-        // the cost lambda receives the real derived values, not a zero-filled placeholder.
-        auto ocp_cost = [combined_cost, derived_expr_0, num_deriveds](
-                const auto& x, const auto& u, auto t) {
-            using T = typename std::decay_t<decltype(x)>::value_type;
-            std::vector<T> deriveds(num_deriveds);
-            {
-                std::vector<T> deriveds_so_far;  // topo index 0 has no dependencies
-                deriveds[0] = derived_expr_0(x, u, deriveds_so_far, t);
-            }
-            return combined_cost(x, u, deriveds, t);
+        // Assemble combined cost functor — also no std::function in the AD path.
+        auto combined_cost_functor = ComposedCostFunctor<DerivedTuple, CostFn>{
+            derived_expr_tuple,
+            std::move(combined_cost),
+            derived_dependency_indices
         };
 
-        return build_internal_model(std::move(combined_dynamics), std::move(ocp_cost));
+        return build_internal_model(std::move(combined_dynamics),
+                                     std::move(combined_cost_functor));
     }
 
  private:
@@ -623,26 +567,22 @@ class ComposedModel {
         if (!mesh_set_) {
             throw ModelError("ComposedModel::build: call set_mesh() before build()");
         }
-        // I1 guard: count state-owning components. v1 supports exactly one;
-        // multi-component dynamics (>1 state owner) is a deferred variadic follow-on.
+        // I1 guard: at least one component must own states.
         {
-            std::size_t num_state_owners = 0;
-            for (const auto& c : components_) {
-                if (c.num_owned_states() > 0) {
-                    ++num_state_owners;
+            std::size_t num_state_owning_components = 0;
+            for (const auto& component : components_) {
+                if (component.num_owned_states() > 0) {
+                    ++num_state_owning_components;
                 }
             }
-            if (num_state_owners == 0) {
+            if (num_state_owning_components == 0) {
                 throw ComponentError(
                     "ComposedModel::build: no component owns any state; "
                     "a composed model needs at least one state.");
             }
-            if (num_state_owners > 1) {
-                throw ComponentError(
-                    "ComposedModel::build: v1 supports exactly 1 state-owning component; found " +
-                    std::to_string(num_state_owners) +
-                    ". Multi-component dynamics is a variadic follow-on.");
-            }
+            // NOTE: num_state_owning_components > 1 is now supported (multi-state-owner feature).
+            // The I_dyn guard in build() checks that the caller provides one dynamics lambda
+            // per state-owning component.
         }
 
         // I3 guard: detect dangling input_derived() calls (input_derived() was called
