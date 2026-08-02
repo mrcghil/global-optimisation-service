@@ -206,6 +206,65 @@ TEST(ClosedForm, SecondOrderDoubleIntegratorMinEnergyMatchesAnalytic) {
 }
 
 // ---------------------------------------------------------------------------
+// Problem 3: Scalar LQR (infinite-horizon approximation)
+// dx/dt = -x + u,  x(0)=1,  free final state (no final penalty).
+// Cost: min ∫₀ᵀ (x² + u²) dt   [NOTE: no leading 1/2 factor]
+//
+// Continuous-time ARE (A=-1, B=1, Q=1, R=1):
+//   A^T P + P A - P B R^{-1} B^T P + Q = 0
+//   => -2P - P² + 1 = 0  =>  P² + 2P - 1 = 0  (positive root)
+// P∞ = -1 + sqrt(2) ≈ 0.41421356...
+// Steady-state optimal gain: K = P∞ = sqrt(2) - 1 (so u*(t) = -K*x(t)).
+// Value function: V(x) = x^T P∞ x  (NO 1/2 factor — standard CARE convention
+//   when cost integrand is x²+u², not (1/2)(x²+u²)).
+// Optimal J for x(0)=1, T→∞: J* = P∞ * x(0)² = sqrt(2)-1 ≈ 0.41421.
+// For T=5 the difference from T→∞ is O(exp(-2*sqrt(2)*T)) ≈ 1e-6 (negligible).
+// Reference: Anderson & Moore "Optimal Control: Linear Quadratic Methods" (1989), §2.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr double kLQRTimeHorizon       = 5.0;
+constexpr double kLQRSteadyStateP      = 0.41421356237;  // sqrt(2) - 1
+// WHY no /2: cost integrand is (x²+u²), not (1/2)(x²+u²), so J*=P∞*x(0)²=P∞.
+constexpr double kLQRAnalyticObjective = kLQRSteadyStateP;  // P∞ * x(0)²=1
+constexpr double kLQRObjectiveTolerance = 0.05;  // Covers discretization + horizon gap
+constexpr std::size_t kLQRNumIntervals = 50;
+}  // namespace
+
+TEST(ClosedForm, LQRScalarMinEnergyMatchesRiccati) {
+    goss::model::Model model;
+    const auto state_handle   = model.add_state("lqr_state");
+    const auto control_handle = model.add_control("lqr_control");
+    // No bound on control (LQR is unconstrained).
+    model.set_initial_state(state_handle, 1.0);
+    // WHY: no set_final_state — LQR has a free terminal state.
+    model.set_mesh(0.0, kLQRTimeHorizon, kLQRNumIntervals);
+
+    // Dynamics: dx/dt = -x + u  (stable open-loop plant + additive control)
+    auto dynamics = [](const auto& state_vec, const auto& control_vec, auto /*time*/) {
+        using ScalarT = typename std::decay_t<decltype(state_vec)>::value_type;
+        return std::vector<ScalarT>{ -state_vec[0] + control_vec[0] };
+    };
+    // Cost: L = x² + u²  (quadratic regulation)
+    auto running_cost = [](const auto& state_vec, const auto& control_vec, auto /*time*/) {
+        return state_vec[0] * state_vec[0] + control_vec[0] * control_vec[0];
+    };
+
+    auto ocp      = model.build(dynamics, running_cost);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "lqr_scalar_hs");
+    // WHY initial guess 0.1: x decays from 1 toward 0; u* ≈ -0.41*x ≈ -0.41 near t=0.
+    // Starting all variables at 0.1 is a safe interior point.
+    const auto trajectory = goss::accuracy::solve_and_extract_trajectory(
+        compiled, /*initial_guess_value=*/0.1);
+    ASSERT_FALSE(trajectory.states.empty());
+    EXPECT_NEAR(trajectory.objective_value, kLQRAnalyticObjective, kLQRObjectiveTolerance)
+        << "LQR scalar: J_numeric=" << trajectory.objective_value
+        << ", J_analytic (P∞)=" << kLQRAnalyticObjective;
+    // State must decay: x(T) should be much smaller than x(0)=1.
+    EXPECT_LT(std::abs(trajectory.states.back()[0]), 0.1)
+        << "LQR state should decay toward 0 over T=5s";
+}
+
+// ---------------------------------------------------------------------------
 // Smoke test (retained from Task 1): confirms the scaffold compiles and
 // solve_and_extract_trajectory returns sane node counts.
 // ---------------------------------------------------------------------------
