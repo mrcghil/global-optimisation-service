@@ -584,6 +584,31 @@ TEST(ComposedModel, DanglingInputDerivedThrows) {
     EXPECT_THROW(composed.build(dyn_lambda, cost_lambda), goss::model::ComponentError);
 }
 
+// ---- Task 1 (composition-quickwins): variadic helper compile+size tests ----
+
+// Task 1 — helpers compile and produce tuples of correct size.
+TEST(ComposedModelVariadic, MakeDerivedExprsProducesCorrectTupleSize) {
+    auto derived_tuple = goss::model::make_derived_exprs(
+        [](const auto& x, const auto& /*u*/, const auto& /*d*/, auto /*t*/) { return x[0]; },
+        [](const auto& x, const auto& /*u*/, const auto& d, auto /*t*/) { return d[0] + x[0]; });
+    constexpr std::size_t expected_size = 2u;
+    EXPECT_EQ(std::tuple_size_v<decltype(derived_tuple)>, expected_size);
+}
+
+TEST(ComposedModelVariadic, MakeComponentDynsProducesCorrectTupleSize) {
+    auto dyn_tuple = goss::model::make_component_dyns(
+        [](const auto& /*x*/, const auto& /*u*/, const auto& /*d*/, auto /*t*/) {
+            using T = double;
+            return std::vector<T>{ T(0.0) };
+        },
+        [](const auto& /*x*/, const auto& /*u*/, const auto& /*d*/, auto /*t*/) {
+            using T = double;
+            return std::vector<T>{ T(0.0) };
+        });
+    constexpr std::size_t expected_size = 2u;
+    EXPECT_EQ(std::tuple_size_v<decltype(dyn_tuple)>, expected_size);
+}
+
 // build() without mesh set throws.
 TEST(ComposedModel, BuildWithoutMeshThrows) {
     goss::model::ComposedModel composed;

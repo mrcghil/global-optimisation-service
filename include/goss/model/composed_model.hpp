@@ -28,6 +28,149 @@ struct ResolvedDerivedEntry {
     std::vector<std::size_t> dependency_global_derived_indices;
 };
 
+// ---- Variadic call-site helpers ----
+
+/// Wrap any number of derived-expression generic lambdas into a std::tuple.
+/// Called at the ComposedModel::build() call site:
+///   composed.build(make_derived_exprs(expr0, expr1), make_component_dyns(dyn0, dyn1), cost);
+template <typename... DerivedExprFns>
+auto make_derived_exprs(DerivedExprFns... fns) {
+    return std::make_tuple(std::forward<DerivedExprFns>(fns)...);
+}
+
+/// Wrap any number of per-component dynamics generic lambdas into a std::tuple.
+/// Components must be listed in the same order as their add_component() registration order.
+template <typename... DynFns>
+auto make_component_dyns(DynFns... fns) {
+    return std::make_tuple(std::forward<DynFns>(fns)...);
+}
+
+// ---- ComposedDynamicsFunctor ----
+
+/// Assembled dynamics functor for a composed model.
+/// Holds a tuple of derived-expression generic lambdas (in topo order) and a tuple
+/// of per-component dynamics generic lambdas (in component registration order).
+///
+/// AD-safety: no std::function anywhere in this struct. Both tuples hold concrete
+/// generic lambda closures captured by value. operator() is a function template
+/// instantiated by the caller (double at validation time, CppAD AD type at recording time).
+template <typename DerivedTuple, typename DynTuple>
+struct ComposedDynamicsFunctor {
+    DerivedTuple                          derived_expr_tuple;
+    DynTuple                              component_dyn_tuple;
+    std::size_t                           num_states;
+    /// component_state_offsets[i] = global state index of the first state owned by
+    /// state-owning component i (in the order state-owning components appear in
+    /// components_ registration order, which matches the DynTuple position).
+    std::vector<std::size_t>              component_state_offsets;
+    /// component_num_owned_states[i] = number of states owned by state-owning component i.
+    std::vector<std::size_t>              component_num_owned_states;
+    /// derived_dependency_indices[i] = topo-global indices of derived quantities that
+    /// derived entry i depends on (from ResolvedDerivedEntry::dependency_global_derived_indices).
+    /// Used to build the deriveds_so_far slice passed to each derived-expression lambda.
+    std::vector<std::vector<std::size_t>> derived_dependency_indices;
+
+    template <typename T>
+    std::vector<T> operator()(const std::vector<T>& x,
+                               const std::vector<T>& u,
+                               T                     t) const {
+        const std::size_t num_deriveds = std::tuple_size_v<DerivedTuple>;
+        std::vector<T> deriveds(num_deriveds);
+        // Step 1: evaluate all derived quantities in topological order.
+        // The comma-fold in evaluate_deriveds_impl processes indices 0, 1, ..., N-1
+        // which is exactly topological order because topo_ordered_deriveds_ preserves it.
+        evaluate_deriveds_impl(deriveds, x, u, t,
+                               std::make_index_sequence<std::tuple_size_v<DerivedTuple>>{});
+        // Step 2: evaluate per-component dynamics into global dx slots.
+        std::vector<T> dx(num_states, T(0));
+        evaluate_dyns_impl(dx, x, u, deriveds, t,
+                           std::make_index_sequence<std::tuple_size_v<DynTuple>>{});
+        return dx;
+    }
+
+ private:
+    template <typename T, std::size_t... Idxs>
+    void evaluate_deriveds_impl(std::vector<T>&       deriveds,
+                                 const std::vector<T>& x,
+                                 const std::vector<T>& u,
+                                 T                     t,
+                                 std::index_sequence<Idxs...>) const {
+        // For each derived entry at topo index Idxs: build a deriveds_so_far slice
+        // containing only the entries this entry explicitly declared as dependencies
+        // (via input_derived() before add_derived()). Those entries have smaller topo
+        // indices (guaranteed by Kahn's algorithm) so deriveds[dep_idx] is already
+        // filled when we arrive here.
+        ((deriveds[Idxs] = [&, this]() {
+            std::vector<T> deriveds_so_far;
+            deriveds_so_far.reserve(derived_dependency_indices[Idxs].size());
+            for (const std::size_t dependency_index : derived_dependency_indices[Idxs]) {
+                deriveds_so_far.push_back(deriveds[dependency_index]);
+            }
+            return std::get<Idxs>(derived_expr_tuple)(x, u, deriveds_so_far, t);
+        }()), ...);
+    }
+
+    template <typename T, std::size_t... Idxs>
+    void evaluate_dyns_impl(std::vector<T>&       dx,
+                             const std::vector<T>& x,
+                             const std::vector<T>& u,
+                             const std::vector<T>& deriveds,
+                             T                     t,
+                             std::index_sequence<Idxs...>) const {
+        // For each state-owning component at position Idxs in DynTuple:
+        // evaluate its dynamics lambda (returns a local vector of size num_owned_states[Idxs])
+        // and copy each element into the global dx slot at component_state_offsets[Idxs] + k.
+        ((([&, this]() {
+            auto component_dx = std::get<Idxs>(component_dyn_tuple)(x, u, deriveds, t);
+            const std::size_t global_offset = component_state_offsets[Idxs];
+            const std::size_t n_owned       = component_num_owned_states[Idxs];
+            for (std::size_t k = 0; k < n_owned; ++k) {
+                dx[global_offset + k] = component_dx[k];
+            }
+        })()), ...);
+    }
+};
+
+// ---- ComposedCostFunctor ----
+
+/// Assembled cost functor for a composed model.
+/// Re-evaluates derived quantities in topological order then delegates to the combined cost lambda.
+/// AD-safety: same invariant as ComposedDynamicsFunctor — no std::function in this struct.
+template <typename DerivedTuple, typename CostFn>
+struct ComposedCostFunctor {
+    DerivedTuple                          derived_expr_tuple;
+    CostFn                                combined_cost_fn;
+    std::vector<std::vector<std::size_t>> derived_dependency_indices;
+
+    template <typename T>
+    T operator()(const std::vector<T>& x,
+                 const std::vector<T>& u,
+                 T                     t) const {
+        const std::size_t num_deriveds = std::tuple_size_v<DerivedTuple>;
+        std::vector<T> deriveds(num_deriveds);
+        evaluate_deriveds_impl(deriveds, x, u, t,
+                               std::make_index_sequence<std::tuple_size_v<DerivedTuple>>{});
+        return combined_cost_fn(x, u, deriveds, t);
+    }
+
+ private:
+    template <typename T, std::size_t... Idxs>
+    void evaluate_deriveds_impl(std::vector<T>&       deriveds,
+                                 const std::vector<T>& x,
+                                 const std::vector<T>& u,
+                                 T                     t,
+                                 std::index_sequence<Idxs...>) const {
+        ((deriveds[Idxs] = [&, this]() {
+            std::vector<T> deriveds_so_far;
+            deriveds_so_far.reserve(derived_dependency_indices[Idxs].size());
+            for (const std::size_t dependency_index : derived_dependency_indices[Idxs]) {
+                deriveds_so_far.push_back(deriveds[dependency_index]);
+            }
+            return std::get<Idxs>(derived_expr_tuple)(x, u, deriveds_so_far, t);
+        }()), ...);
+    }
+};
+
 class ComposedModel {
  public:
     /// Register a control variable shared across all components.
