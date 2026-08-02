@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <vector>
+#include "goss/transcription/errors.hpp"
 #include "goss/transcription/mesh.hpp"
 #include "goss/transcription/trapezoidal.hpp"
 #include "goss/solver/ipopt_solver.hpp"
@@ -116,4 +117,23 @@ TEST(Trapezoidal, UniformOverloadStillPassesAfterRefactor) {
     std::size_t last = compiled.layout.num_nodes() - 1;
     double x_final = result.x[compiled.layout.state_index(last, 0)];
     EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-3);
+}
+
+// ---- DAE guard tests ----
+
+// Guard test: Trapezoidal::compile must throw TranscriptionError when num_algebraic > 0.
+// We use the standard 2-param OcpProblem (which the compile() overloads accept) and set
+// num_algebraic=1 directly on the struct — the guard checks that field, not AlgResFn.
+// This proves the fail-loud guard fires and prevents silent ODE-only NLP construction.
+TEST(Trapezoidal, RejectsAlgebraicVariables) {
+    // Reuse the exponential-decay OCP (2-param) and inject num_algebraic=1.
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 4);
+    ocp.num_algebraic = 1;          // mark as DAE; no AlgResFn needed — guard fires first
+    ocp.algebraic_lower_bounds = { -1e19 };
+    ocp.algebraic_upper_bounds = { 1e19 };
+
+    // The uniform overload delegates to the non-uniform primary; both reject the DAE
+    // problem via the guard in the primary (non-uniform) compile overload.
+    EXPECT_THROW(goss::transcription::Trapezoidal::compile(ocp, "trap_dae_guard"),
+                 goss::transcription::TranscriptionError);
 }

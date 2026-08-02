@@ -466,6 +466,15 @@ class ComposedModel {
     /// AD-safety: AlgResFn must be a concrete generic functor (not std::function).
     /// It is captured by value into the packed functor in build_internal_model_alg()
     /// and called during CppADCG recording under AD types.
+    ///
+    /// @note v1 LIMITATION — substituted dynamics only: the component dynamics lambda
+    /// receives (x, u, deriveds, t) and does NOT receive the algebraic variable vector.
+    /// For a semi-explicit DAE dx/dt = f(x, z_alg), the caller must analytically
+    /// substitute the algebraic constraint g(x, z_alg) = 0 into f to eliminate z_alg,
+    /// yielding the substituted dynamics. The NLP enforces g = 0 at every node
+    /// alongside the collocation defects, so both are satisfied simultaneously by the
+    /// solver. DAEs where f cannot be written without z_alg explicitly require a future
+    /// build overload that threads alg_vars into the dynamics signature.
     template <typename AlgResFn, typename Dyn0Fn, typename CostFn>
     auto build_with_algebraic(AlgResFn algebraic_residuals,
                                Dyn0Fn component_0_dyn,

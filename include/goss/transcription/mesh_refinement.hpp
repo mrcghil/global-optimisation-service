@@ -138,6 +138,17 @@ RefinementResult refine_and_solve(
 
     if (max_iterations == 0) throw TranscriptionError("refine_and_solve: max_iterations must be >= 1");
 
+    // Fail loudly if the caller passes a DAE problem (num_algebraic > 0).
+    // Adaptive mesh refinement does not support algebraic variables in v1; the
+    // underlying scheme guard would fire on the first compile(), but we also check
+    // here to surface the error immediately at refine_and_solve entry.
+    if (ocp.num_algebraic > 0) {
+        throw TranscriptionError(
+            "refine_and_solve: algebraic variables (num_algebraic > 0) are not supported "
+            "by adaptive mesh refinement in v1; use HermiteSimpson::compile directly for "
+            "DAE problems.");
+    }
+
     NonUniformMesh current_mesh = initial_mesh;
     current_mesh.validate();
 

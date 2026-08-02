@@ -1167,13 +1167,9 @@ TEST(ComposedModelAlgebraic, TotalNumAlgebraicSumsComponents) {
     auto alg_fn_a = [](const std::vector<double>&, const std::vector<double>&,
                        const std::vector<double>&, double) -> double { return 0.0; };
     component_a.add_algebraic("z1", alg_fn_a, -1e19, 1e19);
-    goss::model::Component component_b("comp_b");
-    auto alg_fn_b = [](const std::vector<double>&, const std::vector<double>&,
-                       const std::vector<double>&, double) -> double { return 0.0; };
-    // Note: comp_b has no states — but for this unit test we only check counting.
-    // The full build() guards are tested in the solve test.
+    // Only component_a (with 1 algebraic variable) is registered.
+    // total_num_algebraic() must return 1.
     composed.add_component(std::move(component_a));
-    // comp_b has no states so we won't call build(), but total_num_algebraic should still work.
     EXPECT_EQ(composed.total_num_algebraic(), 1u);
 }
 

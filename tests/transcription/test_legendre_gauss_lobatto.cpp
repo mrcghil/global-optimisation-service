@@ -183,3 +183,20 @@ TEST(LegendreGaussLobatto, SameNodeCountOutperformsHermiteSimpson) {
         << "LGL with " << n_nodes << " nodes should outperform HS with "
         << n_nodes << " nodes on smooth exp(-t)";
 }
+
+// ---- DAE guard test ----
+
+// Guard test: LegendreGaussLobatto::compile must throw TranscriptionError when
+// num_algebraic > 0. We use the standard 2-param OcpProblem (which compile() accepts)
+// and set num_algebraic=1 directly — the guard checks that field before any codegen.
+// This proves the fail-loud guard fires and prevents silent ODE-only NLP construction.
+TEST(LegendreGaussLobatto, RejectsAlgebraicVariables) {
+    // Reuse the exponential-decay OCP (2-param) and inject num_algebraic=1.
+    auto ocp = goss::transcription::test::make_exponential_decay(1.0, 1.0, 5);
+    ocp.num_algebraic = 1;          // mark as DAE; no AlgResFn needed — guard fires first
+    ocp.algebraic_lower_bounds = { -1e19 };
+    ocp.algebraic_upper_bounds = { 1e19 };
+
+    EXPECT_THROW(goss::transcription::LegendreGaussLobatto::compile(ocp, "lgl_dae_guard"),
+                 goss::transcription::TranscriptionError);
+}

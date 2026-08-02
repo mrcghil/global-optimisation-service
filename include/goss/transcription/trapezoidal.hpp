@@ -21,6 +21,16 @@ struct Trapezoidal {
                                const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_trap") {
         mesh.validate();
+
+        // Fail loudly if the caller passes a DAE problem (num_algebraic > 0).
+        // Trapezoidal does not support algebraic variables in v1; silently dropping
+        // them would produce a wrong-but-plausible ODE-only NLP.
+        if (ocp.num_algebraic > 0) {
+            throw TranscriptionError(
+                "Trapezoidal::compile: algebraic variables (num_algebraic > 0) are not "
+                "supported by Trapezoidal in v1; use HermiteSimpson for DAE problems.");
+        }
+
         const std::size_t ns = ocp.num_states;
         const std::size_t nc = ocp.num_controls;
         const std::size_t nn = mesh.num_nodes();
