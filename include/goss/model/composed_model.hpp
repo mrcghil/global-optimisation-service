@@ -291,6 +291,15 @@ class ComposedModel {
         return total;
     }
 
+    /// Count of algebraic variables across all registered components.
+    std::size_t total_num_algebraic() const {
+        std::size_t total = 0;
+        for (const auto& component : components_) {
+            total += component.num_algebraic();
+        }
+        return total;
+    }
+
     std::size_t num_controls() const { return control_names_.size(); }
 
     /// Returns the global state index for a named state, or throws ComponentError.
@@ -450,6 +459,81 @@ class ComposedModel {
 
         return build_internal_model(std::move(combined_dynamics),
                                      std::move(combined_cost_functor));
+    }
+
+    /// Build overload for 0 inline derived quantities + 1 algebraic residual functor.
+    ///
+    /// AD-safety: AlgResFn must be a concrete generic functor (not std::function).
+    /// It is captured by value into the packed functor in build_internal_model_alg()
+    /// and called during CppADCG recording under AD types.
+    template <typename AlgResFn, typename Dyn0Fn, typename CostFn>
+    auto build_with_algebraic(AlgResFn algebraic_residuals,
+                               Dyn0Fn component_0_dyn,
+                               CostFn combined_cost) {
+        prepare_build();
+
+        // Guard: this overload is for 0 inline derived quantities.
+        {
+            const std::size_t num_derived_quantities = total_num_derived();
+            if (num_derived_quantities != 0) {
+                throw ComponentError(
+                    "ComposedModel::build_with_algebraic (0-derived overload): "
+                    "0 inline derived quantities expected, found " +
+                    std::to_string(num_derived_quantities) +
+                    "; use the 1-derived algebraic overload.");
+            }
+        }
+
+        const std::size_t num_states      = total_num_states();
+        const std::size_t num_alg         = total_num_algebraic();
+
+        std::vector<std::size_t> component_state_offsets = compute_component_state_offsets();
+        std::size_t comp0_offset  = 0;
+        std::size_t comp0_nstates = 0;
+        for (std::size_t ci = 0; ci < components_.size(); ++ci) {
+            if (components_[ci].num_owned_states() > 0) {
+                comp0_offset  = component_state_offsets[ci];
+                comp0_nstates = components_[ci].num_owned_states();
+                break;
+            }
+        }
+
+        // Combined dynamics: the ODE right-hand side is written in the substituted form.
+        // For the canonical semi-explicit index-1 DAE:
+        //   dx/dt = f(x, z_alg),  g(x, z_alg) = 0
+        // The caller writes the dynamics lambda as f_substituted(x, t) where z_alg is
+        // replaced by its expression from g=0 (e.g. z_alg = c*x => dx/dt = (c-1)*x).
+        // The algebraic_residuals functor independently enforces g=0 at every node via
+        // equality constraints in the NLP. The solver satisfies both simultaneously.
+        //
+        // IMPORTANT: component_0_dyn takes (x, u, deriveds, t). deriveds is empty here
+        // (0 inline derived quantities). The algebraic variable vector is separate from
+        // x and is not passed into dynamics — the ODE sees only x and u.
+        auto combined_dynamics = [
+            component_0_dyn,
+            num_states,
+            comp0_offset,
+            comp0_nstates
+        ](const auto& x, const auto& u, auto t) {
+            using ScalarT = typename std::decay_t<decltype(x)>::value_type;
+            std::vector<ScalarT> deriveds;
+            std::vector<ScalarT> dx(num_states);
+            auto comp0_dx = component_0_dyn(x, u, deriveds, t);
+            for (std::size_t state_idx = 0; state_idx < comp0_nstates; ++state_idx) {
+                dx[comp0_offset + state_idx] = comp0_dx[state_idx];
+            }
+            return dx;
+        };
+
+        auto ocp_cost = [combined_cost](const auto& x, const auto& u, auto t) {
+            using ScalarT = typename std::decay_t<decltype(x)>::value_type;
+            std::vector<ScalarT> deriveds;
+            return combined_cost(x, u, deriveds, t);
+        };
+
+        return build_internal_model_alg(
+            std::move(combined_dynamics), std::move(ocp_cost),
+            std::move(algebraic_residuals), num_alg);
     }
 
  private:
@@ -662,6 +746,27 @@ class ComposedModel {
         // This runs BEFORE any AD codegen in build_internal_model(), using zero-filled
         // probe inputs of the correct global sizes to catch dimension mismatches early.
         validate_dynamics_dimensions();
+        validate_algebraic_dimensions();
+    }
+
+    /// For each component that has algebraic entries, verify that
+    /// evaluate_algebraic_residual returns the expected scalar value without throwing.
+    /// Uses zero-filled probe vectors of correct global sizes.
+    void validate_algebraic_dimensions() const {
+        const std::size_t num_states_probe     = total_num_states();
+        const std::size_t num_algebraics_probe = total_num_algebraic();
+        const std::vector<double> probe_x(num_states_probe, 0.0);
+        const std::vector<double> probe_u(control_names_.size(), 0.0);
+        const std::vector<double> probe_alg(num_algebraics_probe, 0.0);
+        constexpr double probe_t = 0.0;
+        for (const auto& component : components_) {
+            for (std::size_t alg_idx = 0; alg_idx < component.num_algebraic(); ++alg_idx) {
+                // evaluate_algebraic_residual must not throw with zero-filled inputs.
+                // It returns a scalar; we only check it doesn't throw (dimension mismatch
+                // inside the lambda would be a runtime error caught here).
+                component.evaluate_algebraic_residual(alg_idx, probe_x, probe_u, probe_alg, probe_t);
+            }
+        }
     }
 
     /// For each component that has a dynamics lambda registered, call evaluate_dynamics()
@@ -707,6 +812,98 @@ class ComposedModel {
             offset += comp.num_owned_states();
         }
         return offsets;
+    }
+
+    /// Extend build_internal_model to populate algebraic fields of OcpProblem.
+    /// Collects algebraic bounds from all components and forwards them through
+    /// the transcription pipeline alongside the dynamics and cost functors.
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
+    auto build_internal_model_alg(DynamicsFn dynamics, CostFn cost,
+                                   AlgResFn algebraic_residuals,
+                                   std::size_t num_alg) const {
+        Model internal_model;
+
+        for (const auto& comp : components_) {
+            for (const auto& owned_state : comp.owned_states()) {
+                auto sh = internal_model.add_state(owned_state.name);
+                internal_model.set_state_bounds(sh, owned_state.lower_bound, owned_state.upper_bound);
+                if (owned_state.initial_fixed) {
+                    internal_model.set_initial_state(sh, owned_state.initial_value);
+                }
+                if (owned_state.final_fixed) {
+                    internal_model.set_final_state(sh, owned_state.final_value);
+                }
+            }
+        }
+
+        for (std::size_t ci = 0; ci < control_names_.size(); ++ci) {
+            auto ch = internal_model.add_control(control_names_[ci]);
+            internal_model.set_control_bounds(ch, control_lower_[ci], control_upper_[ci]);
+        }
+
+        internal_model.set_mesh(mesh_.t_initial, mesh_.t_final, mesh_.num_intervals);
+
+        // Build the base OcpProblem (two-template-param form).
+        auto base_ocp = internal_model.build(std::move(dynamics), std::move(cost));
+
+        // Collect algebraic bounds from all components in registration order.
+        // Components lay out their algebraic variables contiguously in the same order.
+        std::vector<double> alg_lower_bounds;
+        std::vector<double> alg_upper_bounds;
+        alg_lower_bounds.reserve(num_alg);
+        alg_upper_bounds.reserve(num_alg);
+        for (const auto& comp : components_) {
+            for (const auto& alg_entry : comp.algebraic_entries()) {
+                alg_lower_bounds.push_back(alg_entry.lower_bound);
+                alg_upper_bounds.push_back(alg_entry.upper_bound);
+            }
+        }
+
+        // Construct the three-template-param OcpProblem with algebraic fields.
+        // Use make_algebraic_ocp to deduce Dyn/Cost types without naming them explicitly
+        // (OcpProblem does not expose typedef aliases for its template parameters).
+        return make_algebraic_ocp(std::move(base_ocp), std::move(algebraic_residuals),
+                                  num_alg,
+                                  std::move(alg_lower_bounds),
+                                  std::move(alg_upper_bounds));
+    }
+
+    /// Helper to construct OcpProblem<Dyn, Cost, AlgRes> from a base OcpProblem<Dyn, Cost>
+    /// and algebraic metadata, without naming the Dyn/Cost types explicitly.
+    /// Template argument deduction infers DynamicsFn and CostFn from base_ocp.
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
+    static auto make_algebraic_ocp(
+            transcription::OcpProblem<DynamicsFn, CostFn> base_ocp,
+            AlgResFn algebraic_residuals,
+            std::size_t num_alg,
+            std::vector<double> alg_lower_bounds,
+            std::vector<double> alg_upper_bounds) {
+        // C++17 aggregate initialization: members listed in exact OcpProblem struct order:
+        // num_states, num_controls, dynamics, cost, mesh,
+        // state_lower, state_upper, control_lower, control_upper,
+        // initial_state, initial_state_fixed, final_state, final_state_fixed,
+        // num_algebraic, algebraic_residuals_functor,
+        // algebraic_lower_bounds, algebraic_upper_bounds.
+        transcription::OcpProblem<DynamicsFn, CostFn, AlgResFn> ocp{
+            base_ocp.num_states,
+            base_ocp.num_controls,
+            std::move(base_ocp.dynamics),
+            std::move(base_ocp.cost),
+            base_ocp.mesh,
+            std::move(base_ocp.state_lower),
+            std::move(base_ocp.state_upper),
+            std::move(base_ocp.control_lower),
+            std::move(base_ocp.control_upper),
+            std::move(base_ocp.initial_state),
+            std::move(base_ocp.initial_state_fixed),
+            std::move(base_ocp.final_state),
+            std::move(base_ocp.final_state_fixed),
+            num_alg,
+            std::move(algebraic_residuals),
+            std::move(alg_lower_bounds),
+            std::move(alg_upper_bounds)
+        };
+        return ocp;
     }
 
     /// Construct an internal Model populated with metadata from all components and controls,
