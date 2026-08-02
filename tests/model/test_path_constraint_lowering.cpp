@@ -85,6 +85,19 @@ TEST(PathConstraintLowering, BareStateHandleGeqStillProducesBoundConstraint) {
     EXPECT_DOUBLE_EQ(bc.upper_bound, goss::transcription::kInf);
 }
 
+// Regression test: bare ControlHandle >= double MUST produce ControlBoundConstraint
+// (box bound on the control, not a path constraint). This proves that operator>=
+// on ControlHandle dispatches to the box-bound overload, not PathConstraintExpr.
+TEST(PathConstraintLowering, BareControlHandleGeqStillProducesBoundConstraint) {
+    goss::model::ControlHandle u{0};
+    // Must compile as ControlBoundConstraint (the existing box-bound path).
+    // If this accidentally resolved to PathConstraintExpr, the test would
+    // fail to compile (ControlBoundConstraint has no path_constraint_lower field).
+    goss::model::expr::ControlBoundConstraint bc = u >= 0.0;
+    EXPECT_DOUBLE_EQ(bc.lower_bound, 0.0);
+    EXPECT_DOUBLE_EQ(bc.upper_bound, goss::transcription::kInf);
+}
+
 // Tests for ExprModel::with_path_constraint() and build() path-constraint integration.
 
 // Test: ExprModel::with_path_constraint() compiles and returns a new ExprModel whose

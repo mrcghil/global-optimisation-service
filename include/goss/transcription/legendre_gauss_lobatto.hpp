@@ -46,8 +46,9 @@ namespace goss::transcription {
 /// (for nc==0 the node-0 defect is dropped to avoid overdetermination, so a free
 /// x(0) would be unconstrained; for nc>0 the pinned x(0) anchors the trajectory).
 struct LegendreGaussLobatto {
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+    template <typename DynamicsFn, typename CostFn,
+              typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
                                const std::string& model_name = "goss_lgl") {
         ocp.mesh.validate();
 
@@ -58,6 +59,13 @@ struct LegendreGaussLobatto {
             throw TranscriptionError(
                 "LegendreGaussLobatto::compile: algebraic variables (num_algebraic > 0) are not "
                 "supported by LegendreGaussLobatto in v1; use HermiteSimpson for DAE problems.");
+        }
+        // Fail loudly if the caller passes a path-constrained problem.
+        // LegendreGaussLobatto does not support path constraints in v1; use HermiteSimpson instead.
+        if (ocp.num_path_constraints > 0) {
+            throw TranscriptionError(
+                "LegendreGaussLobatto::compile: path constraints (num_path_constraints > 0) are not "
+                "supported by LegendreGaussLobatto in v1; use HermiteSimpson for path-constrained problems.");
         }
 
         const std::size_t nn = ocp.mesh.num_nodes();  // number of LGL nodes
@@ -232,8 +240,9 @@ struct LegendreGaussLobatto {
     /// Multi-interval adaptive mesh refinement (refine_and_solve) is meaningless
     /// for this scheme — the mesh is the collocation grid, not an AMR partition.
     /// Use Trapezoidal or HermiteSimpson for adaptive mesh refinement.
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>&,
+    template <typename DynamicsFn, typename CostFn,
+              typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>&,
                                const NonUniformMesh&,
                                const std::string&) {
         throw TranscriptionError(

@@ -16,8 +16,9 @@ namespace goss::transcription {
 struct Trapezoidal {
     // Primary overload: explicit non-uniform node times.
     // All implementation logic lives here; the uniform path delegates to this.
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+    template <typename DynamicsFn, typename CostFn,
+              typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
                                const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_trap") {
         mesh.validate();
@@ -29,6 +30,13 @@ struct Trapezoidal {
             throw TranscriptionError(
                 "Trapezoidal::compile: algebraic variables (num_algebraic > 0) are not "
                 "supported by Trapezoidal in v1; use HermiteSimpson for DAE problems.");
+        }
+        // Fail loudly if the caller passes a path-constrained problem.
+        // Trapezoidal does not support path constraints in v1; use HermiteSimpson instead.
+        if (ocp.num_path_constraints > 0) {
+            throw TranscriptionError(
+                "Trapezoidal::compile: path constraints (num_path_constraints > 0) are not "
+                "supported by Trapezoidal in v1; use HermiteSimpson for path-constrained problems.");
         }
 
         const std::size_t ns = ocp.num_states;
@@ -143,8 +151,9 @@ struct Trapezoidal {
 
     // Backward-compatible uniform overload: delegates to the non-uniform path.
     // This is a one-line wrapper; all implementation is in the overload above.
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+    template <typename DynamicsFn, typename CostFn,
+              typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
                                const std::string& model_name = "goss_trap") {
         return compile(ocp, to_nonuniform(ocp.mesh), model_name);
     }
