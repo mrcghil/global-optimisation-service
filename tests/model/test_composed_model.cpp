@@ -823,3 +823,178 @@ TEST(ComposedModelVariadic, WrongDynLambdaCountThrows) {
             cost_lambda),
         goss::model::ComponentError);
 }
+
+// Task 3 — two state-owning components: dimensions and assembled dynamics correct.
+TEST(ComposedModelMultiStateOwner, TwoStateOwnersProduceCorrectGlobalDimensions) {
+    goss::model::ComposedModel composed;
+    composed.add_control("u", 0.0, 1.0);
+
+    goss::model::Component comp_a("a");
+    comp_a.add_state("x_a");
+    comp_a.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 1.0 };
+        });
+
+    goss::model::Component comp_b("b");
+    comp_b.add_state("x_b");
+    comp_b.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 2.0 };
+        });
+
+    composed.add_component(std::move(comp_a));
+    composed.add_component(std::move(comp_b));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto dyn_a = [](const auto& /*x*/, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(1.0) };
+    };
+    auto dyn_b = [](const auto& /*x*/, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(2.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_a, dyn_b),
+        cost_lambda);
+
+    EXPECT_EQ(ocp.num_states, 2u);
+    EXPECT_EQ(ocp.num_controls, 1u);
+}
+
+TEST(ComposedModelMultiStateOwner, TwoStateOwnersAssembledDynamicsCorrect) {
+    // Two components: a owns x_a (dx_a/dt = 3.0), b owns x_b (dx_b/dt = -2.0).
+    // Global state vector: [x_a, x_b] (component registration order).
+    // Expected assembled dx: [3.0, -2.0].
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp_a("a");
+    comp_a.add_state("x_a");
+    comp_a.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 3.0 };
+        });
+
+    goss::model::Component comp_b("b");
+    comp_b.add_state("x_b");
+    comp_b.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ -2.0 };
+        });
+
+    composed.add_component(std::move(comp_a));
+    composed.add_component(std::move(comp_b));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto dyn_a = [](const auto& /*x*/, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(3.0) };
+    };
+    auto dyn_b = [](const auto& /*x*/, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(-2.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_a, dyn_b),
+        cost_lambda);
+
+    std::vector<double> x_test{ 0.0, 0.0 }, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 2u);
+    // x_a is global slot 0 (comp_a registered first), x_b is global slot 1.
+    EXPECT_DOUBLE_EQ(dx[0], 3.0);
+    EXPECT_DOUBLE_EQ(dx[1], -2.0);
+}
+
+TEST(ComposedModelMultiStateOwner, TwoStateOwnersCrossStateRead) {
+    // Component b reads x_a (owned by component a) via input_state.
+    // dx_a/dt = 1.0; dx_b/dt = x[0] * 2.0 = x_a * 2.0.
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp_a("a");
+    comp_a.add_state("x_a");
+    comp_a.set_dynamics(
+        [](const std::vector<double>&, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            return std::vector<double>{ 1.0 };
+        });
+
+    goss::model::Component comp_b("b");
+    comp_b.input_state("x_a");  // declares dependency; global index resolved to 0
+    comp_b.add_state("x_b");
+    comp_b.set_dynamics(
+        [](const std::vector<double>& x, const std::vector<double>&,
+           const std::vector<double>&, double) {
+            // x[0] is x_a (global state index 0 after resolve_names)
+            return std::vector<double>{ x[0] * 2.0 };
+        });
+
+    composed.add_component(std::move(comp_a));
+    composed.add_component(std::move(comp_b));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto dyn_a = [](const auto& /*x*/, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = double;
+        return std::vector<T>{ T(1.0) };
+    };
+    auto dyn_b = [](const auto& x, const auto& /*u*/,
+                     const auto& /*d*/, auto /*t*/) {
+        using T = typename std::decay_t<decltype(x)>::value_type;
+        return std::vector<T>{ x[0] * T(2.0) };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(),
+        goss::model::make_component_dyns(dyn_a, dyn_b),
+        cost_lambda);
+
+    // At x = [3.0, 5.0]: dx_a = 1.0, dx_b = 3.0 * 2.0 = 6.0.
+    std::vector<double> x_test{ 3.0, 5.0 }, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 2u);
+    EXPECT_DOUBLE_EQ(dx[0], 1.0);
+    EXPECT_DOUBLE_EQ(dx[1], 6.0);
+}
+
+// Guard: zero state-owning components still throws (I1 lower bound preserved).
+TEST(ComposedModelMultiStateOwner, ZeroStateOwnersStillThrows) {
+    goss::model::ComposedModel composed;
+    goss::model::Component comp("derived_only");
+    comp.add_derived(
+        "rate",
+        [](const auto& /*x*/, const auto& /*u*/,
+           const auto& /*d*/, double /*t*/) { return 1.0; });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto derived_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                              const auto& /*d*/, auto /*t*/) { return 1.0; };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+    EXPECT_THROW(
+        composed.build(
+            goss::model::make_derived_exprs(derived_lambda),
+            goss::model::make_component_dyns(),
+            cost_lambda),
+        goss::model::ComponentError);
+}
