@@ -6,6 +6,7 @@
 #include "goss/ad/cppadcg_backend.hpp"
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/transcription/errors.hpp"
+#include "goss/transcription/hp_mesh.hpp"
 #include "goss/transcription/lgl_nodes.hpp"
 #include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
@@ -250,6 +251,326 @@ struct LegendreGaussLobatto {
             "LGL uses global single-interval collocation; multi-interval refinement "
             "requires hp-pseudospectral (out of scope). Use Trapezoidal or "
             "HermiteSimpson for adaptive mesh refinement.");
+    }
+
+    /// hp-Pseudospectral collocation: partition [t0,tf] into S segments, each with
+    /// its own set of LGL nodes and differentiation matrix. State continuity across
+    /// segment boundaries is enforced via explicit equality constraints in the NLP.
+    ///
+    /// hp_mesh specifies: segment_boundary_times (size S+1) and per_segment_node_count
+    /// (size S). The ocp.mesh.t_initial / ocp.mesh.t_final must match hp_mesh.
+    ///
+    /// Boundary nodes are DUPLICATED (not shared): segment s owns global nodes
+    /// [offset_s, offset_s + n_s) where offset_s = sum_{r<s} n_r.
+    /// Continuity constraints tie the last state of segment s to the first state
+    /// of segment s+1. Controls are DISCONTINUOUS across segment boundaries.
+    ///
+    /// Node-0 collocation strategy (Reconciliation 2 — matches single-interval compile()):
+    ///   nc > 0: collocate node 0 for ALL segments (first_collocation_node = 0).
+    ///     WHY: each segment's u_0 enters the cost quadrature but is not tied by
+    ///     continuity (continuity constrains states only). Without a node-0 defect,
+    ///     the optimizer drives u_0 → 0 per segment, biasing the objective (O(1/n) bug
+    ///     re-introduced per segment). Collocating node 0 constrains u_0 properly;
+    ///     the system is underdetermined (cost provides additional regularisation).
+    ///   nc == 0: skip node 0 for ALL segments (first_collocation_node = 1).
+    ///     WHY: with x(0) pinned (segment 0) or continuity-tied (segments 1..S-1),
+    ///     collocating node 0 would overdetermine the system — same reasoning as
+    ///     single-interval compile() for nc==0. Matches S=1 single-interval exactly.
+    ///
+    /// REQUIREMENT: all initial state components must be pinned (same guard as compile()).
+    template <typename DynamicsFn, typename CostFn,
+              typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile_hp(
+            const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
+            const HpMesh& hp_mesh,
+            const std::string& model_name = "goss_lgl_hp") {
+        hp_mesh.validate();
+        ocp.mesh.validate();
+
+        // Guard: algebraic variables not supported in hp-pseudospectral v1.
+        if (ocp.num_algebraic > 0) {
+            throw TranscriptionError(
+                "LegendreGaussLobatto::compile_hp: algebraic variables "
+                "(num_algebraic > 0) are not supported by hp-pseudospectral in v1; "
+                "use HermiteSimpson for DAE problems.");
+        }
+        // Guard: path constraints not supported in hp-pseudospectral v1.
+        if (ocp.num_path_constraints > 0) {
+            throw TranscriptionError(
+                "LegendreGaussLobatto::compile_hp: path constraints "
+                "(num_path_constraints > 0) are not supported by hp-pseudospectral "
+                "in v1; use HermiteSimpson for path-constrained problems.");
+        }
+
+        // Verify that the hp_mesh time horizon matches the OcpProblem mesh.
+        if (std::abs(hp_mesh.t_initial() - ocp.mesh.t_initial) > 1e-12 ||
+            std::abs(hp_mesh.t_final()   - ocp.mesh.t_final  ) > 1e-12) {
+            throw TranscriptionError(
+                "compile_hp: hp_mesh time horizon [" +
+                std::to_string(hp_mesh.t_initial()) + ", " +
+                std::to_string(hp_mesh.t_final()) +
+                "] does not match ocp.mesh [" +
+                std::to_string(ocp.mesh.t_initial) + ", " +
+                std::to_string(ocp.mesh.t_final) + "]");
+        }
+
+        const std::size_t num_states   = ocp.num_states;
+        const std::size_t num_controls = ocp.num_controls;
+        const std::size_t num_seg      = hp_mesh.num_segments();
+        const std::size_t total_nodes  = hp_mesh.total_nodes();
+
+        if (total_nodes < 2)
+            throw TranscriptionError("compile_hp: total_nodes must be >= 2");
+
+        if (ocp.state_lower.size() != num_states || ocp.state_upper.size() != num_states)
+            throw TranscriptionError(
+                "compile_hp: state bound vectors must have size == num_states");
+        if (ocp.control_lower.size() != num_controls ||
+                ocp.control_upper.size() != num_controls)
+            throw TranscriptionError(
+                "compile_hp: control bound vectors must have size == num_controls");
+        if (ocp.initial_state.size() != num_states ||
+                ocp.final_state.size() != num_states)
+            throw TranscriptionError(
+                "compile_hp: initial_state/final_state must have size == num_states");
+
+        // Guard: all initial state components must be pinned (same as compile()).
+        // WHY: segment 0 node-0 is the trajectory anchor; for nc==0 its defect
+        // is dropped (would overdetermine), so a free x(0) is unconstrained;
+        // for nc>0 the pinned x(0) correctly anchors the trajectory.
+        for (std::size_t state_idx = 0; state_idx < num_states; ++state_idx) {
+            const bool pinned =
+                (state_idx < ocp.initial_state_fixed.size()) &&
+                (ocp.initial_state_fixed[state_idx] != 0.0);
+            if (!pinned) {
+                throw TranscriptionError(
+                    "LegendreGaussLobatto::compile_hp: all initial states must be pinned "
+                    "(same requirement as compile()): free initial states are not "
+                    "supported.");
+            }
+        }
+
+        // --- Per-segment node-0 collocation decision (Reconciliation 2) ---
+        // Applies uniformly to every segment.
+        //   nc > 0: first_collocation_node = 0 (collocate all nodes including node 0).
+        //   nc == 0: first_collocation_node = 1 (skip node 0 to avoid overdetermination).
+        // This mirrors single-interval compile() exactly and fixes the per-segment
+        // u_0 unconstrained bias that would otherwise be introduced by hp segmentation.
+        const std::size_t first_collocation_node = (num_controls > 0) ? 0 : 1;
+
+        // --- Pre-compute per-segment LGL data ---
+        // For segment s: LGL nodes on [-1,1], physical times, physical quadrature weights,
+        // and the differentiation matrix D_s (on reference [-1,1]).
+        // All captured by value into the packed functor.
+        std::vector<std::vector<double>> all_D(num_seg);
+        std::vector<std::vector<double>> all_t_nodes(num_seg);
+        std::vector<std::vector<double>> all_weights_phys(num_seg);
+        std::vector<double>              all_half_dur(num_seg);
+
+        for (std::size_t seg = 0; seg < num_seg; ++seg) {
+            const std::size_t seg_n_nodes = hp_mesh.per_segment_node_count[seg];
+            const double t_a_s  = hp_mesh.segment_boundary_times[seg];
+            const double t_b_s  = hp_mesh.segment_boundary_times[seg + 1];
+            const double half_dur_s = 0.5 * (t_b_s - t_a_s);
+            all_half_dur[seg] = half_dur_s;
+
+            std::vector<double> lgl_xi_seg, lgl_weights_ref_seg;
+            lgl_nodes_and_weights(seg_n_nodes, lgl_xi_seg, lgl_weights_ref_seg);
+
+            // Physical node times: t_k = t_a_s + half_dur_s * (xi_k + 1).
+            all_t_nodes[seg].resize(seg_n_nodes);
+            for (std::size_t local_k = 0; local_k < seg_n_nodes; ++local_k)
+                all_t_nodes[seg][local_k] =
+                    t_a_s + half_dur_s * (lgl_xi_seg[local_k] + 1.0);
+
+            // Physical quadrature weights: w_phys_k = half_dur_s * w_ref_k.
+            all_weights_phys[seg].resize(seg_n_nodes);
+            for (std::size_t local_k = 0; local_k < seg_n_nodes; ++local_k)
+                all_weights_phys[seg][local_k] =
+                    half_dur_s * lgl_weights_ref_seg[local_k];
+
+            // Local differentiation matrix D_s on [-1,1].
+            // Collocation defect at local node k, state i:
+            //   sum_j D_s[k,j] * x_i(offset+j) - half_dur_s * f_i(x_k, u_k, t_k) = 0
+            // (The half_dur factor appears in the defect; D_s is on the reference domain.)
+            all_D[seg] = lgl_differentiation_matrix(lgl_xi_seg);
+        }
+
+        // Global node offsets: offset_s = sum_{r<s} n_r.
+        std::vector<std::size_t> global_node_offsets(num_seg, 0);
+        for (std::size_t seg = 1; seg < num_seg; ++seg)
+            global_node_offsets[seg] =
+                global_node_offsets[seg - 1] + hp_mesh.per_segment_node_count[seg - 1];
+
+        // --- Compute constraint counts for reserve / gl-gu sizing ---
+        // Defects: per segment, nodes first_collocation_node..n_s-1, all states.
+        //   nc == 0: (n_s - 1) * ns per segment (skip node 0)
+        //   nc > 0:  n_s       * ns per segment (include node 0)
+        // Continuity: (S-1) * ns equality constraints.
+        std::size_t num_defects = 0;
+        for (std::size_t seg = 0; seg < num_seg; ++seg)
+            num_defects +=
+                (hp_mesh.per_segment_node_count[seg] - first_collocation_node) * num_states;
+        const std::size_t num_continuity =
+            (num_seg > 1 ? num_seg - 1 : 0) * num_states;
+        const std::size_t num_constraints_total = num_defects + num_continuity;
+
+        VariableLayout layout(num_states, num_controls, total_nodes);
+
+        // --- Packed functor (AD-safe: no std::function, captures by value) ---
+        // Captures: ocp (dynamics/cost functors by value), layout, all pre-computed
+        // per-segment data, and per_segment_node_count. No virtual dispatch.
+        auto packed = [ocp,
+                       layout,
+                       num_states,
+                       num_controls,
+                       num_seg,
+                       num_defects,
+                       num_continuity,
+                       first_collocation_node,
+                       all_D,
+                       all_t_nodes,
+                       all_weights_phys,
+                       all_half_dur,
+                       global_node_offsets,
+                       per_segment_node_count = hp_mesh.per_segment_node_count]
+                      (const auto& z) {
+            using T = typename std::decay_t<decltype(z)>::value_type;
+
+            auto state_at = [&](std::size_t global_node_idx) {
+                std::vector<T> x(num_states);
+                for (std::size_t state_i = 0; state_i < num_states; ++state_i)
+                    x[state_i] = z[layout.state_index(global_node_idx, state_i)];
+                return x;
+            };
+            auto control_at = [&](std::size_t global_node_idx) {
+                std::vector<T> u(num_controls);
+                for (std::size_t ctrl_j = 0; ctrl_j < num_controls; ++ctrl_j)
+                    u[ctrl_j] = z[layout.control_index(global_node_idx, ctrl_j)];
+                return u;
+            };
+
+            std::vector<T> outputs;
+            outputs.reserve(1 + num_defects + num_continuity);
+
+            // --- Output 0: total running cost via LGL quadrature over ALL nodes ---
+            // Cost sums all nodes regardless of first_collocation_node — the quadrature
+            // weights are purely a cost concern, independent of the collocation skip.
+            T total_cost = T(0);
+            for (std::size_t seg = 0; seg < num_seg; ++seg) {
+                const std::size_t seg_n_nodes   = per_segment_node_count[seg];
+                const std::size_t global_offset = global_node_offsets[seg];
+                for (std::size_t local_k = 0; local_k < seg_n_nodes; ++local_k) {
+                    const std::size_t global_k = global_offset + local_k;
+                    total_cost +=
+                        T(all_weights_phys[seg][local_k]) *
+                        ocp.cost(state_at(global_k), control_at(global_k),
+                                 T(all_t_nodes[seg][local_k]));
+                }
+            }
+            outputs.push_back(total_cost);
+
+            // --- Outputs 1..num_defects: per-segment collocation defects ---
+            // Node-0 handling (Reconciliation 2):
+            //   nc > 0 (first_collocation_node == 0): defect loop k = 0..n_s-1.
+            //     Constrains u_0 of every segment via the ODE, preventing the optimizer
+            //     from driving it to zero (which would bias the objective O(1/n)).
+            //   nc == 0 (first_collocation_node == 1): defect loop k = 1..n_s-1.
+            //     Avoids overdetermination: with x(0) pinned or continuity-tied, adding
+            //     a node-0 defect would create more equations than free state unknowns.
+            for (std::size_t seg = 0; seg < num_seg; ++seg) {
+                const std::size_t seg_n_nodes   = per_segment_node_count[seg];
+                const std::size_t global_offset = global_node_offsets[seg];
+                const double half_dur_s         = all_half_dur[seg];
+
+                // Pre-compute dynamics at each node of this segment.
+                std::vector<std::vector<T>> F_seg(seg_n_nodes);
+                for (std::size_t local_k = 0; local_k < seg_n_nodes; ++local_k) {
+                    const std::size_t global_k = global_offset + local_k;
+                    F_seg[local_k] = ocp.dynamics(
+                        state_at(global_k), control_at(global_k),
+                        T(all_t_nodes[seg][local_k]));
+                }
+
+                // Collocation defect at local node k, state i:
+                //   sum_j D_s[k,j] * x_i(global_offset+j) - half_dur_s * F_seg[k][i] = 0
+                for (std::size_t local_k = first_collocation_node;
+                         local_k < seg_n_nodes; ++local_k) {
+                    for (std::size_t state_i = 0; state_i < num_states; ++state_i) {
+                        T Dx_k_i = T(0);
+                        for (std::size_t local_j = 0; local_j < seg_n_nodes; ++local_j) {
+                            const std::size_t global_j = global_offset + local_j;
+                            Dx_k_i +=
+                                T(all_D[seg][local_k * seg_n_nodes + local_j]) *
+                                z[layout.state_index(global_j, state_i)];
+                        }
+                        outputs.push_back(
+                            Dx_k_i - T(half_dur_s) * F_seg[local_k][state_i]);
+                    }
+                }
+            }
+
+            // --- Outputs (1+num_defects)..(num_defects+num_continuity): continuity ---
+            // For boundary between segment s and segment s+1, state i:
+            //   x_i(last_node_of_s) - x_i(first_node_of_(s+1)) = 0
+            // Controls are NOT continuity-constrained (standard hp-OC convention).
+            for (std::size_t seg = 0; seg + 1 < num_seg; ++seg) {
+                const std::size_t last_node_of_seg =
+                    global_node_offsets[seg] + per_segment_node_count[seg] - 1;
+                const std::size_t first_node_of_next = global_node_offsets[seg + 1];
+                for (std::size_t state_i = 0; state_i < num_states; ++state_i) {
+                    outputs.push_back(
+                        z[layout.state_index(last_node_of_seg,   state_i)] -
+                        z[layout.state_index(first_node_of_next, state_i)]);
+                }
+            }
+
+            return outputs;
+        };
+
+        auto backend = std::make_unique<goss::ad::CppADCGBackend>(
+            packed, layout.total_variables(), model_name);
+
+        // --- Variable bounds: per-node state and control box constraints ---
+        const std::size_t nv = layout.total_variables();
+        std::vector<double> zl(nv, -kInf), zu(nv, kInf);
+        for (std::size_t global_k = 0; global_k < total_nodes; ++global_k) {
+            for (std::size_t state_i = 0; state_i < num_states; ++state_i) {
+                const std::size_t idx = layout.state_index(global_k, state_i);
+                zl[idx] = ocp.state_lower[state_i];
+                zu[idx] = ocp.state_upper[state_i];
+            }
+            for (std::size_t ctrl_j = 0; ctrl_j < num_controls; ++ctrl_j) {
+                const std::size_t idx = layout.control_index(global_k, ctrl_j);
+                zl[idx] = ocp.control_lower[ctrl_j];
+                zu[idx] = ocp.control_upper[ctrl_j];
+            }
+        }
+        // Pin initial state at global node 0 (first node of segment 0).
+        for (std::size_t state_i = 0; state_i < num_states; ++state_i) {
+            if (state_i < ocp.initial_state_fixed.size() &&
+                    ocp.initial_state_fixed[state_i] != 0.0) {
+                const std::size_t idx = layout.state_index(0, state_i);
+                zl[idx] = zu[idx] = ocp.initial_state[state_i];
+            }
+        }
+        // Pin final state at global node total_nodes-1 (last node of last segment).
+        for (std::size_t state_i = 0; state_i < num_states; ++state_i) {
+            if (state_i < ocp.final_state_fixed.size() &&
+                    ocp.final_state_fixed[state_i] != 0.0) {
+                const std::size_t idx = layout.state_index(total_nodes - 1, state_i);
+                zl[idx] = zu[idx] = ocp.final_state[state_i];
+            }
+        }
+
+        // --- Constraint bounds: all equality (collocation defects + continuity) ---
+        std::vector<double> gl(num_constraints_total, 0.0);
+        std::vector<double> gu(num_constraints_total, 0.0);
+
+        auto problem = std::make_unique<nlp::NLPProblem>(
+            std::move(backend), std::move(zl), std::move(zu),
+            std::move(gl), std::move(gu));
+        return CompiledOcp{std::move(problem), layout};
     }
 };
 
