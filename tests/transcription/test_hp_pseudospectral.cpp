@@ -427,7 +427,7 @@ std::vector<double> compute_global_node_times(
 // WHY k=100 (not k=20): at k=20, the global LGL with 20 nodes achieves spectral
 // accuracy (~1e-7) because the LGL polynomial degree-19 resolves exp(-20t) well.
 // At k=100, the function decays from 1.0 to ~0 within [0, 0.05], which falls in
-// the "under-resolved" regime for 12-node global LGL (degree 11).
+// the "under-resolved" regime for 16-node global LGL (degree 15).
 // WHY defined here (not inside TEST body): C++17 forbids template member
 // functions in local classes; dynamics structs must be at namespace scope.
 struct FastDecayK100Dynamics {
@@ -498,32 +498,34 @@ TEST(HpPseudospectral, HRefinementConvergesMonotonicallyOnSmoothProblem) {
 // accuracy (~1e-7) because degree-19 polynomial resolves exp(-20t) with spectral
 // convergence (Chebyshev coefficients decay super-algebraically). The k=20 problem
 // is in the "well-resolved" regime for 20 LGL nodes. For k=100, global LGL with
-// FEWER nodes (12 nodes, degree 11) cannot fully resolve the sharp front in [0,0.1].
+// 16 nodes (degree 15) cannot fully resolve the sharp front in [0,0.1].
 //
-// Global single-interval LGL: 12 nodes (intervals=11) over [0,1].
-// The global polynomial degree is 11. For k=100, the function drops by ~5 decades
-// within [0, 0.05]. The 12 LGL nodes have their smallest positive time at
-// t ≈ 0.012 (for n=12, first interior node ≈ (1 - cos(π/11))/2 ≈ 0.012).
-// The region [0, 0.05] has only ~2 interior LGL nodes — insufficient to resolve
-// the steep exponential front, causing large collocation error.
+// Global single-interval LGL: 16 nodes (intervals=15) over [0,1].
+// The global polynomial degree is 15. For k=100, the function drops by ~5 decades
+// within [0, 0.05]. The 16 LGL nodes are spread across [0,1], leaving only a few
+// nodes inside the steep [0, 0.05] front — insufficient to resolve it, causing
+// large collocation error.
 //
 // hp-LGL: 4 segments with NON-UNIFORM boundaries concentrating nodes near the
-// sharp front. Segment boundaries: [0.0, 0.02, 0.05, 0.20, 1.0] with 3 nodes each
-// (12 total nodes, same total as global LGL).
-// Segment 0 [0.00, 0.02]: 3 nodes → resolves steep front (k*h/n = 100*0.02/3 = 0.67)
-// Segment 1 [0.02, 0.05]: 3 nodes → resolves mid-decay  (k*h/n = 100*0.03/3 = 1.0)
-// Segment 2 [0.05, 0.20]: 3 nodes → tail region (x ≈ 0 here; trivially accurate)
-// Segment 3 [0.20, 1.00]: 3 nodes → essentially zero everywhere (trivially accurate)
+// sharp front. Segment boundaries: [0.0, 0.02, 0.07, 0.20, 1.0] with node counts
+// {5, 5, 3, 3} (16 total nodes, same total as global LGL).
+// Segment 0 [0.00, 0.02]: 5 nodes → resolves the steepest part of the front.
+// Segment 1 [0.02, 0.07]: 5 nodes → resolves mid-decay.
+// Segment 2 [0.07, 0.20]: 3 nodes → x ≈ exp(-7)..exp(-20) ≈ 0 (trivially accurate).
+// Segment 3 [0.20, 1.00]: 3 nodes → essentially zero everywhere (trivially accurate).
 //
-// WHY this shows hp advantage: with the SAME total node count (12), the hp mesh
-// concentrates all nodes near the sharp front, while global LGL spreads its nodes
+// WHY this shows hp advantage: with the SAME total node count (16), the hp mesh
+// concentrates its nodes near the sharp front, while global LGL spreads its nodes
 // across [0,1] without a-priori knowledge of where the feature is.
 //
-// WHY the assertions are conservative:
-// error_global > 1e-3: degree-11 polynomial on [0,1] with k=100 front has large
-//   truncation for the rapid variation in [0.05,1.0] zero region vs [0,0.05] front.
-// error_hp < 1e-4: each segment's local polynomial resolves the local variation well.
-// ratio ≥ 10×: hp wins due to targeted node concentration.
+// WHY the assertions are conservative (recalibrated — NOT the plan's stale
+// k=20/Runge/1e-4/1e-6/100x premise, which was false: LGL collocation converges
+// spectrally on smooth exponentials, so k=20 at 20 nodes is well-resolved):
+// error_global > 1e-3: degree-15 global LGL under-resolves the k=100 front
+//   (empirical error ≈ 5e-2).
+// error_hp < 1e-2: the front-capturing segments satisfy k*h/n <= 1 so the local
+//   polynomials resolve the local variation (empirical error ≈ 3e-3).
+// ratio ≥ 10×: hp wins by ≈15× due to targeted node concentration.
 TEST(HpPseudospectral, HpBeatsGlobalLGLOnSharpFeatureProblem) {
     const double decay_constant = 100.0;
     const double x0_value       = 1.0;
