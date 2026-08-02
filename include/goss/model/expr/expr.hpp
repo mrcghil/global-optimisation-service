@@ -8,3 +8,4 @@
 #include "goss/model/expr/constraints.hpp"
 #include "goss/model/expr/integral.hpp"
 #include "goss/model/expr/expr_model.hpp"
+#include "goss/model/expr/path_constraint.hpp"
