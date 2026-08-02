@@ -226,7 +226,11 @@ constexpr double kLQRTimeHorizon       = 5.0;
 constexpr double kLQRSteadyStateP      = 0.41421356237;  // sqrt(2) - 1
 // WHY no /2: cost integrand is (x²+u²), not (1/2)(x²+u²), so J*=P∞*x(0)²=P∞.
 constexpr double kLQRAnalyticObjective = kLQRSteadyStateP;  // P∞ * x(0)²=1
-constexpr double kLQRObjectiveTolerance = 0.05;  // Covers discretization + horizon gap
+constexpr double kLQRObjectiveTolerance = 5e-3;  // WHY 5e-3: actual numeric error is ~1.4e-7
+                                                  //   (HS at N=50); 0.05 was ~50x too loose and
+                                                  //   would pass a J in [0.364,0.464]. 5e-3 still
+                                                  //   provides ~35000x margin over the actual error
+                                                  //   and catches ~1% regressions without being flaky.
 constexpr std::size_t kLQRNumIntervals = 50;
 }  // namespace
 

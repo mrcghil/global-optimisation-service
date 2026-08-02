@@ -120,8 +120,15 @@ double estimate_convergence_slope(
         ProblemFactory       problem_factory,
         ErrorMetric          error_at_mesh_size,
         const std::vector<std::size_t>& mesh_sizes,  // num_intervals values (increasing)
-        double               solver_tolerance = 1e-11) {
-    assert(mesh_sizes.size() >= 2 && "need at least 2 mesh sizes to fit a slope");
+        double               solver_tolerance = 1e-11,
+        const std::string&   model_name_prefix = "conv_slope_n") {
+    // WHY runtime guard instead of assert(): the accuracy suite builds in Release
+    // (-DNDEBUG), which silences assert(). ADD_FAILURE() fires in all build modes.
+    if (mesh_sizes.size() < 2) {
+        ADD_FAILURE() << "estimate_convergence_slope: need >= 2 mesh sizes; got "
+                      << mesh_sizes.size();
+        return std::numeric_limits<double>::quiet_NaN();
+    }
 
     std::vector<double> log_h_values;
     std::vector<double> log_error_values;
@@ -130,8 +137,9 @@ double estimate_convergence_slope(
 
     for (std::size_t mesh_idx = 0; mesh_idx < mesh_sizes.size(); ++mesh_idx) {
         const std::size_t num_intervals = mesh_sizes[mesh_idx];
-        // Unique model name per mesh size to avoid CppADCG shared-library collisions.
-        const std::string model_name = "conv_slope_n" + std::to_string(num_intervals);
+        // Unique model name per mesh size AND per call site to avoid CppADCG
+        // shared-library collisions (callers pass distinct model_name_prefix values).
+        const std::string model_name = model_name_prefix + std::to_string(num_intervals);
         const goss::transcription::CompiledOcp compiled =
             problem_factory(num_intervals, model_name);
         const SolutionTrajectory trajectory =

@@ -139,20 +139,22 @@ TEST(Benchmarks, BrachistochroneObjectiveMatchesPublished) {
     // WHY 0.35 for T_flight: the solver needs to search upward to T*≈0.5829; starting
     // below the optimum ensures the gradient points in the right direction.
     const std::size_t num_vars = compiled.problem->num_variables();
-    // Layout: z = [x, y, v, T_flight, angle,   x, y, v, T_flight, angle,  ...]
-    //             per-node block size = 4 states + 1 control = 5
     const std::size_t num_nodes = kBrachNumIntervals + 1;  // 81 nodes
-    const std::size_t vars_per_node = 5;  // 4 states + 1 control
+    const goss::transcription::VariableLayout& layout_guess = compiled.layout;
+    // WHY layout accessors: using state_index/control_index instead of manual stride
+    // arithmetic makes the guess robust to future VariableLayout ordering changes
+    // (a layout change would silently corrupt the guess if stride were hard-coded).
+    // State indices: 0=x_pos, 1=y_pos, 2=speed, 3=T_flight. Control index: 0=angle.
     std::vector<double> initial_guess(num_vars, kBrachInitialTimeGuess);
     for (std::size_t node = 0; node < num_nodes; ++node) {
         const double tau = static_cast<double>(node) / static_cast<double>(kBrachNumIntervals);
-        const std::size_t base = node * vars_per_node;
-        initial_guess[base + 0] = tau;                         // x_pos: linear 0→1
-        initial_guess[base + 1] = tau;                         // y_pos: linear 0→1 (down)
+        initial_guess[layout_guess.state_index(node, 0)] = tau;         // x_pos: linear 0→1
+        initial_guess[layout_guess.state_index(node, 1)] = tau;         // y_pos: linear 0→1 (down)
         // WHY sqrt(2·g·τ): conservation of energy gives v = sqrt(2·g·y) along the wire.
-        initial_guess[base + 2] = std::sqrt(2.0 * kGravity * std::max(tau, 0.01));  // speed
-        initial_guess[base + 3] = kBrachInitialTimeGuess;      // T_flight
-        initial_guess[base + 4] = M_PI / 4.0;                  // angle: 45° diagonal
+        initial_guess[layout_guess.state_index(node, 2)] =
+            std::sqrt(2.0 * kGravity * std::max(tau, 0.01));            // speed
+        initial_guess[layout_guess.state_index(node, 3)] = kBrachInitialTimeGuess;  // T_flight
+        initial_guess[layout_guess.control_index(node, 0)] = M_PI / 4.0;            // angle: 45°
     }
 
     // Use IpoptSolver directly (not the helper) to supply the custom initial guess.
