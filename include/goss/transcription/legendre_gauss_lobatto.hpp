@@ -40,7 +40,8 @@ namespace goss::transcription {
 ///
 /// This produces dense coupling (every node in every defect), unlike the banded
 /// local schemes. For moderate n (up to ~40) this is still efficient; for large n
-/// consider multiple LGL sub-intervals (hp-pseudospectral, out of scope here).
+/// or solutions with sharp features, use compile_hp() for hp-pseudospectral
+/// multi-segment collocation.
 ///
 /// REQUIREMENT: all initial state components MUST be pinned via set_initial_state /
 /// initial_state_fixed before calling compile(). Free initial states are not supported
@@ -248,9 +249,9 @@ struct LegendreGaussLobatto {
                                const std::string&) {
         throw TranscriptionError(
             "LegendreGaussLobatto does not support NonUniformMesh / refine_and_solve: "
-            "LGL uses global single-interval collocation; multi-interval refinement "
-            "requires hp-pseudospectral (out of scope). Use Trapezoidal or "
-            "HermiteSimpson for adaptive mesh refinement.");
+            "LGL uses global single-interval collocation. For multi-segment collocation "
+            "use compile_hp() (hp-pseudospectral); for adaptive mesh refinement use "
+            "Trapezoidal or HermiteSimpson.");
     }
 
     /// hp-Pseudospectral collocation: partition [t0,tf] into S segments, each with
