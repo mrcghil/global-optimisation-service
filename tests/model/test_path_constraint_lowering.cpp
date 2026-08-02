@@ -84,3 +84,53 @@ TEST(PathConstraintLowering, BareStateHandleGeqStillProducesBoundConstraint) {
     EXPECT_DOUBLE_EQ(bc.lower_bound, 0.0);
     EXPECT_DOUBLE_EQ(bc.upper_bound, goss::transcription::kInf);
 }
+
+// Tests for ExprModel::with_path_constraint() and build() path-constraint integration.
+
+// Test: ExprModel::with_path_constraint() compiles and returns a new ExprModel whose
+// PathTuple has one PathConstraintEntry appended. No build() call here — just verifies
+// the type-accumulation pattern compiles.
+TEST(PathConstraintLowering, ExprModelWithPathConstraintCompiles) {
+    using namespace goss::model::expr;
+
+    ExprModel<> model;
+    const auto q_handle = model.add_state("state_x");
+    model.set_mesh(0.0, 1.0, 4);
+
+    // with_path_constraint() must accept a PathConstraintExpr and return a new ExprModel.
+    // Constraint: x + 1.0 >= 0.0  (always satisfied for x >= -1.0)
+    auto model_with_path = std::move(model)
+        .with_path_constraint((StateLeaf{q_handle.index} + 1.0) >= 0.0);
+
+    // The returned ExprModel should compile and allow further chaining.
+    // We don't call build() here (no dynamics yet) — just verify the type compiles.
+    SUCCEED();
+}
+
+// Test: ExprModel::build() with a path constraint produces an OcpProblem that has
+// num_path_constraints == 1 and correctly populated bound vectors.
+TEST(PathConstraintLowering, ExprModelBuildProducesOcpWithPathConstraints) {
+    using namespace goss::model::expr;
+
+    ExprModel<> model;
+    const auto q_handle = model.add_state("state_x");
+    const auto u_handle = model.add_control("control_u");
+    model.set_mesh(0.0, 1.0, 4);
+    model.apply(q_handle.initial() == 2.0);
+    model.apply(q_handle >= -goss::transcription::kInf);
+    model.apply(u_handle >= -1.0);
+    model.apply(u_handle <= 1.0);
+
+    // dx/dt = u,  cost = x^2,  path constraint: x + 1.0 >= 0.0
+    auto ocp = std::move(model)
+        .with_dynamics(q_handle, ControlLeaf{u_handle.index})
+        .with_cost(integral(StateLeaf{q_handle.index} * StateLeaf{q_handle.index}))
+        .with_path_constraint((StateLeaf{q_handle.index} + 1.0) >= 0.0)
+        .build();
+
+    // The OcpProblem should have 1 path constraint with bounds [0.0, +kInf].
+    EXPECT_EQ(ocp.num_path_constraints, 1u);
+    EXPECT_EQ(ocp.path_constraint_lower.size(), 1u);
+    EXPECT_DOUBLE_EQ(ocp.path_constraint_lower[0], 0.0);
+    EXPECT_DOUBLE_EQ(ocp.path_constraint_upper[0], goss::transcription::kInf);
+}

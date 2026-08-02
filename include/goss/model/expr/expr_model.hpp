@@ -27,6 +27,7 @@
 #include "goss/model/expr/constraints.hpp"
 #include "goss/model/expr/errors.hpp"
 #include "goss/model/expr/integral.hpp"
+#include "goss/model/expr/path_constraint.hpp"
 #include "goss/model/model.hpp"
 
 namespace goss::model::expr {
@@ -122,12 +123,16 @@ struct DynamicsFunctor {
 /// a cost expression, then delegates to Model::build().
 ///
 /// DynTuple grows with each with_dynamics() call — each call returns a NEW
-/// ExprModel<NewDynTuple, CostFn> type (moving model_/dyn_tuple_/cost_fn_ in).
-/// CostFn defaults to std::monostate (sentinel for "no cost set") and is
-/// replaced by with_cost(). build() uses `if constexpr` to detect CostFn ==
-/// std::monostate at compile time and throws ExprError at runtime in that
-/// branch — a missing with_cost() is therefore a runtime error (not a
-/// compile-time static_assert).
+/// ExprModel<NewDynTuple, CostFn, PathTuple> type (moving model_/dyn_tuple_/
+/// cost_fn_/path_tuple_ in). CostFn defaults to std::monostate (sentinel for
+/// "no cost set") and is replaced by with_cost(). PathTuple defaults to an
+/// empty std::tuple<> and grows with each with_path_constraint() call.
+/// build() uses `if constexpr` to detect CostFn == std::monostate at compile
+/// time and throws ExprError at runtime in that branch — a missing with_cost()
+/// is therefore a runtime error (not a compile-time static_assert). When
+/// PathTuple is non-empty, build() assembles a PathConstraintFunctor and
+/// delegates to model_.build_with_path_constraints(); otherwise the no-path
+/// path is unchanged.
 ///
 /// Usage:
 ///   goss::model::expr::ExprModel<> m;
@@ -139,21 +144,27 @@ struct DynamicsFunctor {
 ///   auto ocp = std::move(m)
 ///       .with_dynamics(q, ARRIVAL - ControlLeaf{rate.index})
 ///       .with_cost(integral(StateLeaf{q.index} + w * rate * rate))
+///       .with_path_constraint((StateLeaf{q.index} + 1.0) >= 0.0)
 ///       .build();
-template <typename DynTuple = std::tuple<>, typename CostFn = std::monostate>
+template <typename DynTuple  = std::tuple<>,
+          typename CostFn    = std::monostate,
+          typename PathTuple = std::tuple<>>
 class ExprModel {
  public:
     // --- Default construction (used for ExprModel<> entry point) ---
     ExprModel() = default;
 
-    /// Internal constructor used by with_dynamics() and with_cost() to
-    /// transfer all accumulated state into the returned ExprModel specialisation.
+    /// Internal constructor used by with_dynamics(), with_cost(), and
+    /// with_path_constraint() to transfer all accumulated state into the
+    /// returned ExprModel specialisation.
     ExprModel(goss::model::Model model_arg,
               DynTuple           dyn_tuple_arg,
-              CostFn             cost_fn_arg)
+              CostFn             cost_fn_arg,
+              PathTuple          path_tuple_arg)
         : model_(std::move(model_arg)),
           dyn_tuple_(std::move(dyn_tuple_arg)),
-          cost_fn_(std::move(cost_fn_arg)) {}
+          cost_fn_(std::move(cost_fn_arg)),
+          path_tuple_(std::move(path_tuple_arg)) {}
 
     // --- Model-level forwarding setters ---
 
@@ -244,21 +255,53 @@ class ExprModel {
             std::move(dyn_tuple_),
             std::make_tuple(std::move(new_entry)));
         using NewDynTuple = decltype(new_tuple);
-        return ExprModel<NewDynTuple, CostFn>{
+        // Forward path_tuple_ unchanged — the PathTuple type param is preserved.
+        return ExprModel<NewDynTuple, CostFn, PathTuple>{
             std::move(model_),
             std::move(new_tuple),
-            std::move(cost_fn_)
+            std::move(cost_fn_),
+            std::move(path_tuple_)
         };
     }
 
     /// Set the cost functor and return a NEW ExprModel with the CostFn type
     /// replaced. Replaces std::monostate sentinel with the real cost type.
+    /// Forwards path_tuple_ unchanged so the PathTuple type param is preserved.
     template <typename NewCostFn>
     auto with_cost(NewCostFn new_cost_fn) && {
-        return ExprModel<DynTuple, NewCostFn>{
+        return ExprModel<DynTuple, NewCostFn, PathTuple>{
             std::move(model_),
             std::move(dyn_tuple_),
-            std::move(new_cost_fn)
+            std::move(new_cost_fn),
+            std::move(path_tuple_)
+        };
+    }
+
+    /// Register a path constraint and return a NEW ExprModel with the PathTuple
+    /// extended by one PathConstraintEntry. The constraint is evaluated at every
+    /// collocation node during transcription.
+    ///
+    /// WHY &&: same reason as with_dynamics() — model_ must be moved to avoid
+    /// deep copies of state vectors; each call produces a distinct template
+    /// specialisation (PathTuple grows by one entry type).
+    template <typename Expr>
+    auto with_path_constraint(PathConstraintExpr<Expr> path_constraint_expression) && {
+        // Build a PathConstraintEntry (alias for PathConstraintExpr) from the expr.
+        PathConstraintEntry<Expr> new_entry{
+            std::move(path_constraint_expression.constraint_expression),
+            path_constraint_expression.path_constraint_lower,
+            path_constraint_expression.path_constraint_upper
+        };
+        // Append the new entry to the accumulated tuple — same pattern as with_dynamics().
+        auto new_path_tuple = std::tuple_cat(
+            std::move(path_tuple_),
+            std::make_tuple(std::move(new_entry)));
+        using NewPathTuple = decltype(new_path_tuple);
+        return ExprModel<DynTuple, CostFn, NewPathTuple>{
+            std::move(model_),
+            std::move(dyn_tuple_),
+            std::move(cost_fn_),
+            std::move(new_path_tuple)
         };
     }
 
@@ -314,7 +357,35 @@ class ExprModel {
                 declared_state_count
             };
 
-            return model_.build(std::move(dyn_functor), std::move(cost_fn_));
+            // When path constraints are registered, assemble a PathConstraintFunctor
+            // and delegate to model_.build_with_path_constraints() which produces a
+            // 4-param OcpProblem with algebraic defaults in the middle.
+            // When PathTuple is empty, the original no-path build() path is used.
+            constexpr std::size_t registered_path_count = std::tuple_size_v<PathTuple>;
+            if constexpr (registered_path_count == 0) {
+                // No path constraints: use the default NoPathConstraints path.
+                return model_.build(std::move(dyn_functor), std::move(cost_fn_));
+            } else {
+                // Assemble PathConstraintFunctor from the accumulated path tuple.
+                PathConstraintFunctor<PathTuple> path_functor{
+                    std::move(path_tuple_),
+                    registered_path_count
+                };
+                // Extract per-constraint lower/upper bounds before moving path_functor.
+                auto path_constraint_lower_bounds = extract_path_constraint_lower(path_functor);
+                auto path_constraint_upper_bounds = extract_path_constraint_upper(path_functor);
+
+                // Delegate to build_with_path_constraints — a new Model overload that
+                // reuses build()'s validation logic and produces a 4-param OcpProblem
+                // with algebraic defaults filling positions 14-17 in the aggregate init.
+                return model_.build_with_path_constraints(
+                    std::move(dyn_functor),
+                    std::move(cost_fn_),
+                    std::move(path_functor),
+                    registered_path_count,
+                    std::move(path_constraint_lower_bounds),
+                    std::move(path_constraint_upper_bounds));
+            }
         }
     }
 
@@ -333,6 +404,10 @@ class ExprModel {
     // Default-constructing std::monostate is valid; with_cost() replaces it
     // with the real CostFunctor type via the template parameter.
     CostFn             cost_fn_{};
+    // path_tuple_ is an empty std::tuple<> by default (no path constraints).
+    // with_path_constraint() appends one PathConstraintEntry per call, changing
+    // the PathTuple type parameter (same type-accumulation pattern as DynTuple).
+    PathTuple          path_tuple_{};
 };
 
 }  // namespace goss::model::expr

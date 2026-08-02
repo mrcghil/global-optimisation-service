@@ -172,6 +172,66 @@ class Model {
         };
     }
 
+    /// Build an OcpProblem with path constraints. Called by ExprModel::build()
+    /// when one or more path constraints have been registered via with_path_constraint().
+    ///
+    /// Reuses build()'s validation logic by first constructing a 2-param OcpProblem,
+    /// then extending it to 4-param by inserting algebraic-field defaults (fields 14-17)
+    /// and path-constraint fields (fields 18-21) via aggregate initialization.
+    ///
+    /// AD-safety: PathConstraintFn is passed by value and stored in OcpProblem::path_constraints
+    /// as a concrete template parameter — no std::function, no virtual dispatch.
+    template <typename DynamicsFn, typename CostFn, typename PathConstraintFn>
+    transcription::OcpProblem<DynamicsFn, CostFn,
+                               transcription::NoAlgebraicResiduals, PathConstraintFn>
+    build_with_path_constraints(
+            DynamicsFn          dynamics_functor,
+            CostFn              cost_functor,
+            PathConstraintFn    path_constraint_functor,
+            std::size_t         num_path_constraints_arg,
+            std::vector<double> path_constraint_lower_arg,
+            std::vector<double> path_constraint_upper_arg) const {
+        // Reuse existing build() for all validation (state count, mesh, bounds checks).
+        // Returns OcpProblem<DynamicsFn, CostFn> == <Dyn, Cost, NoAlgebraicResiduals,
+        // NoPathConstraints>, which we strip to pull the 13 base fields.
+        auto base_ocp = build(std::move(dynamics_functor), std::move(cost_functor));
+
+        // Aggregate-init the 4-param OcpProblem.
+        // Field order matches ocp_problem.hpp EXACTLY (21 fields total):
+        //   Fields 1-13  : base (num_states...final_state_fixed)
+        //   Fields 14-17 : algebraic defaults (0, NoAlgebraicResiduals{}, {}, {})
+        //   Fields 18-21 : path constraints (count, lower, upper, functor)
+        return transcription::OcpProblem<DynamicsFn, CostFn,
+                                         transcription::NoAlgebraicResiduals,
+                                         PathConstraintFn>{
+            // --- 13 base fields ---
+            base_ocp.num_states,
+            base_ocp.num_controls,
+            std::move(base_ocp.dynamics),
+            std::move(base_ocp.cost),
+            base_ocp.mesh,
+            std::move(base_ocp.state_lower),
+            std::move(base_ocp.state_upper),
+            std::move(base_ocp.control_lower),
+            std::move(base_ocp.control_upper),
+            std::move(base_ocp.initial_state),
+            std::move(base_ocp.initial_state_fixed),
+            std::move(base_ocp.final_state),
+            std::move(base_ocp.final_state_fixed),
+            // --- 4 algebraic defaults (field 14-17) ---
+            // num_algebraic == 0: no DAE algebraic variables in this problem.
+            std::size_t{0},
+            transcription::NoAlgebraicResiduals{},
+            std::vector<double>{},  // algebraic_lower_bounds (empty — no algebraic vars)
+            std::vector<double>{},  // algebraic_upper_bounds (empty — no algebraic vars)
+            // --- 4 path-constraint fields (field 18-21) ---
+            num_path_constraints_arg,
+            std::move(path_constraint_lower_arg),
+            std::move(path_constraint_upper_arg),
+            std::move(path_constraint_functor)
+        };
+    }
+
  private:
     void check_state_index(std::size_t i, const char* who) const {
         if (i >= state_names_.size())
