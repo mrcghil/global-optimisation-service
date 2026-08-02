@@ -206,3 +206,20 @@ target_link_libraries(goss_bench_tests PRIVATE
     goss_ipopt_iface goss_nlopt_iface cppadcg
     $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_bench_tests)
+
+# ---- Accuracy validation suite ----
+# Shared yardstick for all transcription schemes and future features.
+# Links identically to goss_model_tests so every API available there
+# is available here; all new feature integration tests should add a
+# tests/accuracy/test_<feature>_accuracy.cpp entry here.
+add_executable(goss_accuracy_tests
+  tests/accuracy/test_closed_form.cpp
+  tests/accuracy/test_benchmarks.cpp
+  tests/accuracy/test_convergence_order.cpp
+  tests/accuracy/test_invariants.cpp)
+target_include_directories(goss_accuracy_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_accuracy_tests PRIVATE
+  goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
+  goss_ipopt_iface goss_nlopt_iface cppadcg
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+gtest_discover_tests(goss_accuracy_tests)
