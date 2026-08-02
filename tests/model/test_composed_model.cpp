@@ -1158,6 +1158,29 @@ TEST(ComposedModelVariadic, TopoOrderedDerivedNamesReflectsDependencyOrder) {
     EXPECT_EQ(topo_names[1], "b");  // dependent second
 }
 
+// ---- Task 4 (dae-algebraic-variables): ComposedModel algebraic metadata collection tests ----
+
+TEST(ComposedModelAlgebraic, TotalNumAlgebraicSumsComponents) {
+    goss::model::ComposedModel composed;
+    goss::model::Component component_a("comp_a");
+    component_a.add_state("x");
+    auto alg_fn_a = [](const std::vector<double>&, const std::vector<double>&,
+                       const std::vector<double>&, double) -> double { return 0.0; };
+    component_a.add_algebraic("z1", alg_fn_a, -1e19, 1e19);
+    // Only component_a (with 1 algebraic variable) is registered.
+    // total_num_algebraic() must return 1.
+    composed.add_component(std::move(component_a));
+    EXPECT_EQ(composed.total_num_algebraic(), 1u);
+}
+
+TEST(ComposedModelAlgebraic, TotalNumAlgebraicZeroWhenNoneRegistered) {
+    goss::model::ComposedModel composed;
+    goss::model::Component component("comp");
+    component.add_state("position");
+    composed.add_component(std::move(component));
+    EXPECT_EQ(composed.total_num_algebraic(), 0u);
+}
+
 TEST(ComposedModelMultiDerived, ThreeDerivedLinearChainEvaluatesCorrectly) {
     // Chain: c depends on b which depends on a.
     // a = 1.0 (constant); b = a * 2.0 = 2.0; c = b + a = 3.0.

@@ -22,6 +22,30 @@ struct DerivedHandle {
     constexpr operator std::size_t() const noexcept { return index; }
 };
 
+/// Opaque handle to an algebraic-variable (DAE Flavor 2) entry, analogous to DerivedHandle.
+struct AlgebraicHandle {
+    std::size_t index;
+    constexpr operator std::size_t() const noexcept { return index; }
+};
+
+/// Metadata for one algebraic variable registered via Component::add_algebraic().
+/// The validation_fn stores the double-typed residual g(x, u, z_alg, t) for
+/// validation-path evaluation only. The AD path uses a generic template lambda
+/// passed as a concrete template parameter to ComposedModel::build() — never
+/// type-erased here.
+struct AlgebraicEntry {
+    std::string name;
+    /// Residual function: g(x, u, alg_vars, t) → double.
+    /// The solver enforces g == 0 at every collocation node.
+    std::function<double(
+        const std::vector<double>& x,
+        const std::vector<double>& u,
+        const std::vector<double>& alg_vars,
+        double t)> validation_fn;
+    double lower_bound;
+    double upper_bound;
+};
+
 /// Metadata for one owned state within a Component.
 struct OwnedStateEntry {
     std::string name;
@@ -129,56 +153,40 @@ class Component {
         return DerivedHandle{local_index};
     }
 
-    // -------------------------------------------------------------------------
-    // FOLLOW-ON (NOT BUILT IN v1): Algebraic-variable flavor of derived quantities
-    // -------------------------------------------------------------------------
-    //
-    // Spec §8 describes two flavors of derived quantities:
-    //
-    //   Flavor 1 — Inline expression (built in v1): A derived quantity is a pure
-    //   function of (x, u, t), evaluated in topological order inside the dynamics
-    //   functor. No new NLP variable is introduced. This is what add_derived() provides.
-    //
-    //   Flavor 2 — Algebraic variable (DAE-style, deferred to a follow-on plan):
-    //   A derived quantity is promoted to a real NLP decision variable with a
-    //   defining equality constraint  v − g(x, u, t) = 0  enforced at every
-    //   collocation node. This is the algebraic-variable (DAE) flavor.
-    //
-    // The intended API for Flavor 2 would be:
-    //
-    //   DerivedHandle Component::add_algebraic(
-    //       const std::string& name,
-    //       std::function<double(const std::vector<double>& x,
-    //                            const std::vector<double>& u,
-    //                            double t)> defining_residual,
-    //       double lower, double upper);
-    //
-    // where `defining_residual` evaluates g(x, u, t) so that the solver enforces
-    // v − defining_residual(x, u, t) = 0 at each node.
-    //
-    // Implementing Flavor 2 requires four additive changes (none break the v1 path):
-    //
-    //   1. OcpProblem new field: `algebraic_residuals` functor
-    //      (x, u, alg_vars, t) → vector<T> of residuals, plus `num_algebraic` count
-    //      and per-variable lower/upper bounds.
-    //
-    //   2. VariableLayout extension: algebraic variables become per-node slots in
-    //      the NLP decision vector z (analogous to states), requiring a new
-    //      `algebraic_index(node, j)` accessor.
-    //
-    //   3. Transcription packed-functor extension: Trapezoidal and HermiteSimpson
-    //      compile functions must emit one additional equality-constraint output
-    //      per algebraic variable per collocation node, added to gl/gu as defect
-    //      rows (reusing the existing transcription defect seam from spec §7
-    //      "Algebraic (DAE) constraints → transcription/").
-    //
-    //   4. ComposedModel::build() extension: collect algebraic entries from all
-    //      components, populate OcpProblem::algebraic_residuals and num_algebraic,
-    //      and forward them through the transcription pipeline.
-    //
-    // This is estimated as a medium-sized follow-on plan (3–4 tasks).
-    // Implement only after v1 composition is merged and validated.
-    // -------------------------------------------------------------------------
+    /// Register an algebraic variable (DAE Flavor 2).
+    ///
+    /// The validation_fn (double-typed) is stored for validation-path evaluation only.
+    /// The actual AD-safe residual is a concrete generic lambda passed to
+    /// ComposedModel::build() — see the AD-safety invariant in the plan.
+    ///
+    /// The solver enforces validation_fn(x, u, alg_vars, t) == 0 at every
+    /// collocation node by adding one equality constraint per algebraic variable per node.
+    ///
+    /// lower and upper are bounds on the algebraic variable's value (not on the residual).
+    AlgebraicHandle add_algebraic(
+            const std::string& name,
+            std::function<double(const std::vector<double>&,
+                                 const std::vector<double>&,
+                                 const std::vector<double>&,
+                                 double)> validation_fn,
+            double lower,
+            double upper) {
+        ensure_name_unique_in_component(name);
+        if (lower > upper) {
+            throw ComponentError(
+                "Component '" + component_name_ + "': add_algebraic(\"" + name +
+                "\"): lower bound " + std::to_string(lower) +
+                " > upper bound " + std::to_string(upper));
+        }
+        const std::size_t local_index = algebraic_entries_.size();
+        algebraic_entries_.push_back(AlgebraicEntry{
+            name,
+            std::move(validation_fn),
+            lower,
+            upper
+        });
+        return AlgebraicHandle{local_index};
+    }
 
     /// Register this component's dynamics (double-typed, for validation only).
     /// The lambda must return a vector of size == num_owned_states().
@@ -210,9 +218,31 @@ class Component {
 
     std::size_t num_derived() const { return derived_entries_.size(); }
 
+    std::size_t num_algebraic() const { return algebraic_entries_.size(); }
+
     const std::vector<OwnedStateEntry>& owned_states() const { return owned_states_; }
 
     const std::vector<DerivedEntry>& derived_entries() const { return derived_entries_; }
+
+    const std::vector<AlgebraicEntry>& algebraic_entries() const { return algebraic_entries_; }
+
+    /// Invoke the double-path validation residual for algebraic variable j.
+    /// For validation use only; the AD path uses the generic lambda passed to build().
+    double evaluate_algebraic_residual(
+            std::size_t j,
+            const std::vector<double>& global_x,
+            const std::vector<double>& global_u,
+            const std::vector<double>& alg_vars,
+            double t) const {
+        if (j >= algebraic_entries_.size()) {
+            throw ComponentError(
+                "Component '" + component_name_ +
+                "': evaluate_algebraic_residual: index " + std::to_string(j) +
+                " out of range (" + std::to_string(algebraic_entries_.size()) +
+                " algebraic entries)");
+        }
+        return algebraic_entries_[j].validation_fn(global_x, global_u, alg_vars, t);
+    }
 
     const std::vector<std::string>& input_state_names() const { return input_state_names_; }
 
@@ -264,7 +294,8 @@ class Component {
         }
     }
 
-    /// Throw ComponentError if the given name is already used by any owned state or derived entry.
+    /// Throw ComponentError if the given name is already used by any owned state,
+    /// derived entry, or algebraic entry within this component.
     void ensure_name_unique_in_component(const std::string& name) const {
         for (const auto& entry : owned_states_) {
             if (entry.name == name) {
@@ -273,6 +304,14 @@ class Component {
             }
         }
         for (const auto& entry : derived_entries_) {
+            if (entry.name == name) {
+                throw ComponentError(
+                    "Component '" + component_name_ + "': duplicate name '" + name + "'");
+            }
+        }
+        // Also check algebraic entries so that names are globally unique within the component
+        // across states, derived quantities, and algebraic variables.
+        for (const auto& entry : algebraic_entries_) {
             if (entry.name == name) {
                 throw ComponentError(
                     "Component '" + component_name_ + "': duplicate name '" + name + "'");
@@ -300,6 +339,7 @@ class Component {
                           double)> cost_fn_;
     bool has_dynamics_ = false;
     bool has_cost_ = false;
+    std::vector<AlgebraicEntry> algebraic_entries_;
 };
 
 }  // namespace goss::model

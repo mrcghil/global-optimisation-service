@@ -117,3 +117,130 @@ TEST(HermiteSimpson, UniformOverloadStillPassesAfterRefactor) {
     double x_final = result.x[compiled.layout.state_index(last, 0)];
     EXPECT_NEAR(x_final, goss::transcription::test::exp_decay_solution(x0, 1.0), 1e-5);
 }
+
+namespace {
+
+/// Minimal OcpProblem with 1 state, 0 controls, 1 algebraic variable.
+/// Dynamics: dx/dt = 0 (trivial, no movement).
+/// Algebraic residual: g(x, u, z_alg, t) = z_alg[0] - 2.0*x[0]
+/// This enforces z_alg[0] = 2*x[0] at every node.
+/// With x(0) = 3.0 fixed and dx/dt = 0, the solution is x(t) = 3.0 everywhere,
+/// so z_alg(t) = 6.0 everywhere.
+struct TrivialAlgebraicDynamics {
+    template <typename T>
+    std::vector<T> operator()(const std::vector<T>& /*x*/,
+                               const std::vector<T>& /*u*/,
+                               T /*t*/) const {
+        return { T(0.0) };  // dx/dt = 0
+    }
+};
+struct ZeroCostAlg {
+    template <typename T>
+    T operator()(const std::vector<T>& /*x*/,
+                 const std::vector<T>& /*u*/,
+                 T /*t*/) const {
+        return T(0);
+    }
+};
+struct TwiceXResidual {
+    // g(x, u, z_alg, t) = z_alg[0] - 2*x[0]
+    // Enforces z_alg[0] = 2*x[0] when driven to zero by the solver.
+    template <typename T>
+    std::vector<T> operator()(const std::vector<T>& x,
+                               const std::vector<T>& /*u*/,
+                               const std::vector<T>& alg_vars,
+                               T /*t*/) const {
+        return { alg_vars[0] - T(2.0) * x[0] };
+    }
+};
+
+goss::transcription::OcpProblem<TrivialAlgebraicDynamics, ZeroCostAlg, TwiceXResidual>
+make_twice_x_algebraic_ocp(double x0_val, std::size_t num_intervals) {
+    goss::transcription::OcpProblem<TrivialAlgebraicDynamics, ZeroCostAlg, TwiceXResidual> ocp;
+    ocp.num_states = 1;
+    ocp.num_controls = 0;
+    ocp.dynamics = TrivialAlgebraicDynamics{};
+    ocp.cost = ZeroCostAlg{};
+    ocp.mesh = goss::transcription::Mesh{0.0, 1.0, num_intervals};
+    ocp.state_lower = { -1e19 };
+    ocp.state_upper = { 1e19 };
+    ocp.control_lower = {};
+    ocp.control_upper = {};
+    ocp.initial_state = { x0_val };
+    ocp.initial_state_fixed = { 1.0 };
+    ocp.final_state = { 0.0 };
+    ocp.final_state_fixed = { 0.0 };
+    ocp.num_algebraic = 1;
+    ocp.algebraic_residuals_functor = TwiceXResidual{};
+    ocp.algebraic_lower_bounds = { -1e19 };
+    ocp.algebraic_upper_bounds = { 1e19 };
+    return ocp;
+}
+
+}  // namespace
+
+TEST(HermiteSimpsonAlgebraic, NumConstraintsIncludesAlgebraicResiduals) {
+    // 5 intervals, 6 nodes (nn=6).
+    // Defect constraints: ni*ns = 5*1 = 5.
+    // Algebraic residual constraints: nn*na = 6*1 = 6.
+    // Total constraints = 5 + 6 = 11.
+    const std::size_t num_intervals = 5;
+    auto ocp = make_twice_x_algebraic_ocp(3.0, num_intervals);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_alg_count");
+    const std::size_t nn = num_intervals + 1;
+    const std::size_t expected_defects = num_intervals * 1;  // ni * ns
+    const std::size_t expected_alg_residuals = nn * 1;       // nn * na
+    EXPECT_EQ(compiled.problem->num_constraints(),
+              expected_defects + expected_alg_residuals);
+}
+
+TEST(HermiteSimpsonAlgebraic, AlgebraicConstraintBoundsAreEqualityZero) {
+    const std::size_t num_intervals = 4;
+    auto ocp = make_twice_x_algebraic_ocp(3.0, num_intervals);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_alg_bounds");
+    const auto& gl = compiled.problem->constraint_lower_bounds();
+    const auto& gu = compiled.problem->constraint_upper_bounds();
+    // All constraints (defects + algebraic) must be equality [0, 0].
+    for (std::size_t i = 0; i < gl.size(); ++i) {
+        EXPECT_DOUBLE_EQ(gl[i], 0.0) << "constraint lower bound at index " << i;
+        EXPECT_DOUBLE_EQ(gu[i], 0.0) << "constraint upper bound at index " << i;
+    }
+}
+
+TEST(HermiteSimpsonAlgebraic, LayoutHasCorrectAlgebraicStride) {
+    const std::size_t num_intervals = 3;
+    auto ocp = make_twice_x_algebraic_ocp(3.0, num_intervals);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_alg_stride");
+    // ns=1, nc=0, na=1, nn=4. stride=2. total_variables=8.
+    EXPECT_EQ(compiled.layout.num_algebraic(), 1u);
+    EXPECT_EQ(compiled.layout.variables_per_node(), 2u);
+    EXPECT_EQ(compiled.layout.total_variables(), 8u);
+    // Verify algebraic_index positioning.
+    EXPECT_EQ(compiled.layout.algebraic_index(0, 0), 1u);  // node 0: x=0, alg=1
+    EXPECT_EQ(compiled.layout.algebraic_index(1, 0), 3u);  // node 1: x=2, alg=3
+}
+
+TEST(HermiteSimpsonAlgebraic, AlgebraicBoundsSatisfied) {
+    // Bounds test: algebraic variable bounds [-1e19, 1e19] should be set on alg slots.
+    const std::size_t num_intervals = 3;
+    auto ocp = make_twice_x_algebraic_ocp(3.0, num_intervals);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_alg_varbounds");
+    const auto& zl = compiled.problem->variable_lower_bounds();
+    const auto& zu = compiled.problem->variable_upper_bounds();
+    const std::size_t nn = num_intervals + 1;
+    for (std::size_t k = 0; k < nn; ++k) {
+        const std::size_t alg_idx = compiled.layout.algebraic_index(k, 0);
+        EXPECT_DOUBLE_EQ(zl[alg_idx], -1e19);
+        EXPECT_DOUBLE_EQ(zu[alg_idx],  1e19);
+    }
+}
+
+TEST(HermiteSimpsonAlgebraic, ZeroAlgebraicPreservesExistingBehavior) {
+    // Passing a two-template-param OcpProblem must still work exactly as before.
+    const double x0 = 1.0, tf = 1.0;
+    auto ocp = goss::transcription::test::make_exponential_decay(x0, tf, 10);
+    auto compiled = goss::transcription::HermiteSimpson::compile(ocp, "hs_alg_compat");
+    EXPECT_EQ(compiled.layout.num_algebraic(), 0u);
+    // num_constraints must still be ni * ns = 10 * 1 = 10.
+    EXPECT_EQ(compiled.problem->num_constraints(), 10u);
+}

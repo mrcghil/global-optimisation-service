@@ -50,6 +50,16 @@ struct LegendreGaussLobatto {
     static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
                                const std::string& model_name = "goss_lgl") {
         ocp.mesh.validate();
+
+        // Fail loudly if the caller passes a DAE problem (num_algebraic > 0).
+        // LegendreGaussLobatto does not support algebraic variables in v1; silently
+        // dropping them would produce a wrong-but-plausible ODE-only NLP.
+        if (ocp.num_algebraic > 0) {
+            throw TranscriptionError(
+                "LegendreGaussLobatto::compile: algebraic variables (num_algebraic > 0) are not "
+                "supported by LegendreGaussLobatto in v1; use HermiteSimpson for DAE problems.");
+        }
+
         const std::size_t nn = ocp.mesh.num_nodes();  // number of LGL nodes
         const std::size_t ns = ocp.num_states;
         const std::size_t nc = ocp.num_controls;
