@@ -262,6 +262,63 @@ TEST(HpPseudospectral, ContinuityAtSegmentBoundaries) {
     }
 }
 
+// --- Test: per-segment differentiation matrix is exact up to degree n_s-1 ---
+// For segment [t_a, t_b] with n_s LGL nodes, the local D_s matrix on [-1,1]
+// differentiates polynomials of degree <= n_s-1 exactly (standard LGL property).
+// We verify the PHYSICAL-domain scaling: (D_s @ p_xi)[row] = half_dur * (dp/dt)(t_row)
+// for p(t) = (t - t_a)^k, k=1..n_s-1.
+TEST(HpPseudospectral, PerSegmentDifferentiationMatrixExactUpToDegreeNMinusOne) {
+    // Test for two segment sizes: n_s=4 and n_s=6.
+    for (const std::size_t n_s : {4u, 6u}) {
+        // Arbitrary physical interval to test real-world scaling.
+        const double t_a_seg   = 0.3;
+        const double t_b_seg   = 0.8;
+        const double half_dur_seg = 0.5 * (t_b_seg - t_a_seg);
+
+        std::vector<double> lgl_xi_seg, lgl_weights_seg;
+        goss::transcription::lgl_nodes_and_weights(n_s, lgl_xi_seg, lgl_weights_seg);
+
+        // Physical node times: t_k = t_a + half_dur * (xi_k + 1).
+        std::vector<double> t_physical(n_s);
+        for (std::size_t k = 0; k < n_s; ++k)
+            t_physical[k] = t_a_seg + half_dur_seg * (lgl_xi_seg[k] + 1.0);
+
+        // Local differentiation matrix on [-1,1].
+        const std::vector<double> D_seg =
+            goss::transcription::lgl_differentiation_matrix(lgl_xi_seg);
+
+        // For polynomial p(t) = (t - t_a)^k (k=1..n_s-1):
+        //   p_xi[j] = (t_physical[j] - t_a)^k = (half_dur * (xi_j+1))^k
+        //   (dp/dt)(t_row) = k * (t_row - t_a)^(k-1)
+        // Collocation scaling: (D_s @ p_xi)[row] must equal half_dur_seg * (dp/dt)(t_row).
+        const std::size_t degree_max = n_s - 1;  // LGL is exact up to degree n_s-1
+        for (std::size_t poly_degree = 1; poly_degree <= degree_max; ++poly_degree) {
+            // Evaluate polynomial at LGL nodes.
+            std::vector<double> p_at_nodes(n_s);
+            for (std::size_t j = 0; j < n_s; ++j)
+                p_at_nodes[j] = std::pow(t_physical[j] - t_a_seg,
+                                         static_cast<double>(poly_degree));
+
+            for (std::size_t row = 0; row < n_s; ++row) {
+                // Compute (D_s @ p_xi)[row] = sum_j D_seg[row*n_s + j] * p_at_nodes[j].
+                double D_times_p = 0.0;
+                for (std::size_t col = 0; col < n_s; ++col)
+                    D_times_p += D_seg[row * n_s + col] * p_at_nodes[col];
+
+                // Expected: half_dur_seg * dp/dt at t_physical[row].
+                const double dp_dt_at_row =
+                    static_cast<double>(poly_degree) *
+                    std::pow(t_physical[row] - t_a_seg,
+                             static_cast<double>(poly_degree - 1));
+                const double expected = half_dur_seg * dp_dt_at_row;
+
+                EXPECT_NEAR(D_times_p, expected, 1e-8)
+                    << "n_s=" << n_s << " degree=" << poly_degree << " row=" << row;
+            }
+        }
+    }
+}
+
 // --- Test 7: Controlled (nc>0) problem — node-0 reconciliation guard ---
 //
 // Single-integrator min-energy: dx/dt=u, x(0)=0, x(T)=1, min ∫₀ᵀ u² dt.
