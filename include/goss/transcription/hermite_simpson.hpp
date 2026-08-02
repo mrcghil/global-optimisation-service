@@ -16,8 +16,8 @@ namespace goss::transcription {
 struct HermiteSimpson {
     // Primary overload: explicit non-uniform node times.
     // All implementation logic lives here; the uniform path delegates to this.
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn>& ocp,
                                const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_hs") {
         mesh.validate();
@@ -34,7 +34,16 @@ struct HermiteSimpson {
         if (ocp.initial_state.size() != ns || ocp.final_state.size() != ns)
             throw TranscriptionError("compile: initial_state/final_state must have size == num_states");
 
-        VariableLayout layout(ns, nc, nn);
+        const std::size_t na = ocp.num_algebraic;
+        // Validate algebraic bound vectors before touching any element.
+        if (na > 0) {
+            if (ocp.algebraic_lower_bounds.size() != na || ocp.algebraic_upper_bounds.size() != na) {
+                throw TranscriptionError(
+                    "compile: algebraic_lower_bounds and algebraic_upper_bounds "
+                    "must each have size == num_algebraic");
+            }
+        }
+        VariableLayout layout(ns, nc, nn, na);
 
         // Capture node_times by value so the packed functor owns the data.
         // Per-interval hk = node_times[k+1] - node_times[k]; per-node tk = node_times[k].
@@ -42,12 +51,16 @@ struct HermiteSimpson {
 
         // Packed functor: captures ocp, layout, and node_times by value (cheap functors).
         // Generic lambda so it can be instantiated with the AD scalar type during recording.
-        auto packed = [ocp, layout, ns, nc, ni, node_times](const auto& z) {
+        // na is captured explicitly so the algebraic residual loop is zero-overhead when na==0.
+        auto packed = [ocp, layout, ns, nc, ni, na, node_times](const auto& z) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
-            outputs.reserve(1 + ni * ns);
+            // Reserve: 1 cost + ni*ns defects + nn*na algebraic residuals.
+            // nn = ni + 1 (one more node than intervals).
+            const std::size_t nn_local = ni + 1;
+            outputs.reserve(1 + ni * ns + nn_local * na);
 
-            // Helper lambdas to extract x_k and u_k from z.
+            // Helper lambdas to extract x_k, u_k from z.
             auto state_at = [&](std::size_t node) {
                 std::vector<T> x(ns);
                 for (std::size_t i = 0; i < ns; ++i) x[i] = z[layout.state_index(node, i)];
@@ -57,6 +70,13 @@ struct HermiteSimpson {
                 std::vector<T> u(nc);
                 for (std::size_t j = 0; j < nc; ++j) u[j] = z[layout.control_index(node, j)];
                 return u;
+            };
+            // Extract the algebraic variable vector at a node. Returns empty vector when na==0.
+            auto algebraic_at = [&](std::size_t node) {
+                std::vector<T> alg_vars(na);
+                for (std::size_t k = 0; k < na; ++k)
+                    alg_vars[k] = z[layout.algebraic_index(node, k)];
+                return alg_vars;
             };
             auto midpoint_control = [&](const std::vector<T>& uk, const std::vector<T>& uk1) {
                 std::vector<T> um(nc);
@@ -111,9 +131,25 @@ struct HermiteSimpson {
                 cost += (hk / T(6)) * (Lk + T(4) * Lmid + Lk1);
             }
 
-            // Pack outputs: cost first, then defects (same order as Trapezoidal).
+            // Pack outputs: cost first, then defects (same order as Trapezoidal), then
+            // algebraic residuals at each node (one per algebraic variable per node).
             outputs.push_back(cost);
             for (auto& d : defects) outputs.push_back(d);
+
+            // Algebraic residual constraints: g(x_k, u_k, alg_k, t_k) == 0 at every node k.
+            // One equality constraint per algebraic variable per node.
+            // These are added AFTER the defect rows so existing constraint indexing is unchanged.
+            if (na > 0) {
+                for (std::size_t k = 0; k < nn_local; ++k) {
+                    T tk = T(node_times[k]);
+                    auto residuals_at_k = ocp.algebraic_residuals_functor(
+                        state_at(k), control_at(k), algebraic_at(k), tk);
+                    // residuals_at_k has size na; push each residual as a separate constraint row.
+                    for (std::size_t j = 0; j < na; ++j) {
+                        outputs.push_back(residuals_at_k[j]);
+                    }
+                }
+            }
             return outputs;
         };
 
@@ -150,10 +186,25 @@ struct HermiteSimpson {
             }
         }
 
-        // Constraint bounds: all defect constraints are equalities [0, 0].
-        // num_defects = ni * ns, identical to Trapezoidal.
+        // Algebraic variable bounds: per-node, same bound for every node.
+        // (Algebraic variables are not pinned at boundary nodes — they are free to vary
+        // as long as the residual constraint is satisfied.)
+        if (na > 0) {
+            for (std::size_t k = 0; k < nn; ++k) {
+                for (std::size_t j = 0; j < na; ++j) {
+                    const std::size_t alg_idx = layout.algebraic_index(k, j);
+                    zl[alg_idx] = ocp.algebraic_lower_bounds[j];
+                    zu[alg_idx] = ocp.algebraic_upper_bounds[j];
+                }
+            }
+        }
+
+        // Constraint bounds: defect rows are equalities [0,0]; algebraic residual rows
+        // are also equalities [0,0] (the solver enforces g == 0 at every collocation node).
         const std::size_t num_defects = ni * ns;
-        std::vector<double> gl(num_defects, 0.0), gu(num_defects, 0.0);
+        const std::size_t num_alg_constraints = nn * na;   // one per algebraic per node
+        const std::size_t total_constraints = num_defects + num_alg_constraints;
+        std::vector<double> gl(total_constraints, 0.0), gu(total_constraints, 0.0);
 
         auto problem = std::make_unique<nlp::NLPProblem>(
             std::move(backend), std::move(zl), std::move(zu), std::move(gl), std::move(gu));
@@ -161,9 +212,10 @@ struct HermiteSimpson {
     }
 
     // Backward-compatible uniform overload: delegates to the non-uniform path.
-    // This is a one-line wrapper; all implementation is in the overload above.
-    template <typename DynamicsFn, typename CostFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn>& ocp,
+    // Three-param template so it accepts OcpProblem<Dyn,Cost,AlgResFn> (including the
+    // default AlgResFn=NoAlgebraicResiduals used by all existing ODE callers).
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn>& ocp,
                                const std::string& model_name = "goss_hs") {
         return compile(ocp, to_nonuniform(ocp.mesh), model_name);
     }
