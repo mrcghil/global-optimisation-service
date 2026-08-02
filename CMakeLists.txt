@@ -125,7 +125,8 @@ add_library(goss_transcription STATIC
   src/transcription/legendre_gauss_lobatto.cpp
   src/transcription/mesh.cpp
   src/transcription/mesh_refinement.cpp
-  src/transcription/lgl_nodes.cpp)
+  src/transcription/lgl_nodes.cpp
+  src/transcription/hp_mesh.cpp)
 target_include_directories(goss_transcription PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(goss_transcription PUBLIC goss_nlp goss_ad
   PRIVATE goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
@@ -139,7 +140,9 @@ add_executable(goss_transcription_tests
   tests/transcription/test_scheme_agreement.cpp
   tests/transcription/test_mesh.cpp
   tests/transcription/test_mesh_refinement.cpp
-  tests/transcription/test_lgl_nodes.cpp)
+  tests/transcription/test_lgl_nodes.cpp
+  tests/transcription/test_hp_mesh.cpp
+  tests/transcription/test_hp_pseudospectral.cpp)
 target_include_directories(goss_transcription_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_transcription_tests PRIVATE
@@ -221,7 +224,8 @@ add_executable(goss_accuracy_tests
   tests/accuracy/test_invariants.cpp
   tests/accuracy/test_composition_accuracy.cpp
   tests/accuracy/test_dae_accuracy.cpp
-  tests/accuracy/test_path_constraint_accuracy.cpp)
+  tests/accuracy/test_path_constraint_accuracy.cpp
+  tests/accuracy/test_hp_accuracy.cpp)
 target_include_directories(goss_accuracy_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_accuracy_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
