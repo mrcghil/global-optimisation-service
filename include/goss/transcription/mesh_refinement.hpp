@@ -26,9 +26,10 @@ namespace goss::transcription {
 ///
 /// This mirrors sim::validate_by_integration but returns per-interval data
 /// instead of the global max, enabling targeted mesh bisection.
-template <typename DynamicsFn, typename CostFn>
+template <typename DynamicsFn, typename CostFn,
+          typename AlgResFn, typename PathConstraintFn>
 std::vector<double> estimate_interval_errors(
-    const OcpProblem<DynamicsFn, CostFn>& ocp,
+    const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
     const NonUniformMesh& mesh,
     const solver::SolverResult& result,
     const VariableLayout& layout) {
@@ -127,9 +128,10 @@ struct RefinementResult {
 ///
 /// The Scheme template parameter is the scheme struct (Trapezoidal or HermiteSimpson).
 /// It must expose: static CompiledOcp compile(ocp, NonUniformMesh, std::string).
-template <typename Scheme, typename DynamicsFn, typename CostFn>
+template <typename Scheme, typename DynamicsFn, typename CostFn,
+          typename AlgResFn, typename PathConstraintFn>
 RefinementResult refine_and_solve(
-    const OcpProblem<DynamicsFn, CostFn>& ocp,
+    const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
     const NonUniformMesh& initial_mesh,
     const std::string& base_model_name,
     double error_tolerance,
@@ -147,6 +149,14 @@ RefinementResult refine_and_solve(
             "refine_and_solve: algebraic variables (num_algebraic > 0) are not supported "
             "by adaptive mesh refinement in v1; use HermiteSimpson::compile directly for "
             "DAE problems.");
+    }
+    // Fail loudly if the caller passes a path-constrained problem.
+    // Adaptive mesh refinement does not support path constraints in v1; use
+    // HermiteSimpson::compile directly for path-constrained problems.
+    if (ocp.num_path_constraints > 0) {
+        throw TranscriptionError(
+            "refine_and_solve: path constraints (num_path_constraints > 0) are not supported "
+            "by adaptive mesh refinement in v1; use HermiteSimpson::compile directly.");
     }
 
     NonUniformMesh current_mesh = initial_mesh;

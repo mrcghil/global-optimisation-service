@@ -134,6 +134,7 @@ add_executable(goss_transcription_tests
   tests/transcription/test_variable_layout.cpp
   tests/transcription/test_trapezoidal.cpp
   tests/transcription/test_hermite_simpson.cpp
+  tests/transcription/test_hermite_simpson_path.cpp
   tests/transcription/test_legendre_gauss_lobatto.cpp
   tests/transcription/test_scheme_agreement.cpp
   tests/transcription/test_mesh.cpp
@@ -161,7 +162,8 @@ add_executable(goss_model_tests
   tests/model/test_composition_solve.cpp
   tests/model/test_expr_nodes.cpp
   tests/model/test_expr_lowering.cpp
-  tests/model/test_expr_solve.cpp)
+  tests/model/test_expr_solve.cpp
+  tests/model/test_path_constraint_lowering.cpp)
 target_include_directories(goss_model_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_model_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
@@ -218,7 +220,8 @@ add_executable(goss_accuracy_tests
   tests/accuracy/test_convergence_order.cpp
   tests/accuracy/test_invariants.cpp
   tests/accuracy/test_composition_accuracy.cpp
-  tests/accuracy/test_dae_accuracy.cpp)
+  tests/accuracy/test_dae_accuracy.cpp
+  tests/accuracy/test_path_constraint_accuracy.cpp)
 target_include_directories(goss_accuracy_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_accuracy_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver

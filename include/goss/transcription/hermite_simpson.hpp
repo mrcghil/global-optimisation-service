@@ -16,8 +16,11 @@ namespace goss::transcription {
 struct HermiteSimpson {
     // Primary overload: explicit non-uniform node times.
     // All implementation logic lives here; the uniform path delegates to this.
-    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn>& ocp,
+    // Four template params so the overload accepts OcpProblem<Dyn,Cost,AlgResFn,PathConstraintFn>.
+    // Existing 2- and 3-param OcpProblem callers still deduce correctly because
+    // AlgResFn and PathConstraintFn both have defaults.
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
                                const NonUniformMesh& mesh,
                                const std::string& model_name = "goss_hs") {
         mesh.validate();
@@ -34,13 +37,25 @@ struct HermiteSimpson {
         if (ocp.initial_state.size() != ns || ocp.final_state.size() != ns)
             throw TranscriptionError("compile: initial_state/final_state must have size == num_states");
 
-        const std::size_t na = ocp.num_algebraic;
+        const std::size_t na  = ocp.num_algebraic;
+        const std::size_t npc = ocp.num_path_constraints;
         // Validate algebraic bound vectors before touching any element.
         if (na > 0) {
             if (ocp.algebraic_lower_bounds.size() != na || ocp.algebraic_upper_bounds.size() != na) {
                 throw TranscriptionError(
                     "compile: algebraic_lower_bounds and algebraic_upper_bounds "
                     "must each have size == num_algebraic");
+            }
+        }
+        // Validate path-constraint bound vectors when path constraints are present.
+        if (npc > 0) {
+            if (ocp.path_constraint_lower.size() != npc) {
+                throw TranscriptionError(
+                    "compile: path_constraint_lower must have size == num_path_constraints");
+            }
+            if (ocp.path_constraint_upper.size() != npc) {
+                throw TranscriptionError(
+                    "compile: path_constraint_upper must have size == num_path_constraints");
             }
         }
         VariableLayout layout(ns, nc, nn, na);
@@ -52,13 +67,14 @@ struct HermiteSimpson {
         // Packed functor: captures ocp, layout, and node_times by value (cheap functors).
         // Generic lambda so it can be instantiated with the AD scalar type during recording.
         // na is captured explicitly so the algebraic residual loop is zero-overhead when na==0.
-        auto packed = [ocp, layout, ns, nc, ni, na, node_times](const auto& z) {
+        // npc captured alongside na so the path-constraint loop is zero-overhead when npc==0.
+        auto packed = [ocp, layout, ns, nc, ni, na, npc, node_times](const auto& z) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
-            // Reserve: 1 cost + ni*ns defects + nn*na algebraic residuals.
+            // Reserve: 1 cost + ni*ns defects + nn*na algebraic residuals + nn*npc path rows.
             // nn = ni + 1 (one more node than intervals).
             const std::size_t nn_local = ni + 1;
-            outputs.reserve(1 + ni * ns + nn_local * na);
+            outputs.reserve(1 + ni * ns + nn_local * na + nn_local * npc);
 
             // Helper lambdas to extract x_k, u_k from z.
             auto state_at = [&](std::size_t node) {
@@ -150,6 +166,20 @@ struct HermiteSimpson {
                     }
                 }
             }
+
+            // Path-constraint rows: g(x_k, u_k, t_k) at every collocation node k.
+            // Evaluated AFTER algebraic rows so the index base is num_defects + num_alg_constraints.
+            // Output order: node-major — all npc constraints for node 0, then node 1, etc.
+            // path_constraints takes (x, u, t) — 3 args, no alg_vars (unlike algebraic_residuals_functor).
+            if (npc > 0) {
+                for (std::size_t k = 0; k < nn_local; ++k) {
+                    T tk = T(node_times[k]);
+                    auto gk = ocp.path_constraints(state_at(k), control_at(k), tk);
+                    for (std::size_t j = 0; j < npc; ++j) {
+                        outputs.push_back(gk[j]);
+                    }
+                }
+            }
             return outputs;
         };
 
@@ -199,12 +229,24 @@ struct HermiteSimpson {
             }
         }
 
-        // Constraint bounds: defect rows are equalities [0,0]; algebraic residual rows
-        // are also equalities [0,0] (the solver enforces g == 0 at every collocation node).
-        const std::size_t num_defects = ni * ns;
+        // Constraint bounds — layout MUST match the packed functor output order:
+        //   [0 .. num_defects)                                     : defect equalities [0,0]
+        //   [num_defects .. num_defects+num_alg_constraints)       : algebraic equalities [0,0]
+        //   [num_defects+num_alg_constraints .. total_constraints) : path rows [lower[j], upper[j]]
+        const std::size_t num_defects         = ni * ns;
         const std::size_t num_alg_constraints = nn * na;   // one per algebraic per node
-        const std::size_t total_constraints = num_defects + num_alg_constraints;
+        const std::size_t num_path_rows       = nn * npc;  // one per path constraint per node
+        const std::size_t total_constraints   = num_defects + num_alg_constraints + num_path_rows;
+        // Initialise all to [0,0]; defect and algebraic rows stay as equalities.
         std::vector<double> gl(total_constraints, 0.0), gu(total_constraints, 0.0);
+        // Fill path-constraint bounds after the algebraic block (arbitrary [lower, upper]).
+        for (std::size_t k = 0; k < nn; ++k) {
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t row = num_defects + num_alg_constraints + k * npc + j;
+                gl[row] = ocp.path_constraint_lower[j];
+                gu[row] = ocp.path_constraint_upper[j];
+            }
+        }
 
         auto problem = std::make_unique<nlp::NLPProblem>(
             std::move(backend), std::move(zl), std::move(zu), std::move(gl), std::move(gu));
@@ -212,10 +254,10 @@ struct HermiteSimpson {
     }
 
     // Backward-compatible uniform overload: delegates to the non-uniform path.
-    // Three-param template so it accepts OcpProblem<Dyn,Cost,AlgResFn> (including the
-    // default AlgResFn=NoAlgebraicResiduals used by all existing ODE callers).
-    template <typename DynamicsFn, typename CostFn, typename AlgResFn>
-    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn>& ocp,
+    // Four-param template so it accepts OcpProblem<Dyn,Cost,AlgResFn,PathConstraintFn>
+    // (including 2- and 3-param callers where AlgResFn and PathConstraintFn default).
+    template <typename DynamicsFn, typename CostFn, typename AlgResFn, typename PathConstraintFn>
+    static CompiledOcp compile(const OcpProblem<DynamicsFn, CostFn, AlgResFn, PathConstraintFn>& ocp,
                                const std::string& model_name = "goss_hs") {
         return compile(ocp, to_nonuniform(ocp.mesh), model_name);
     }

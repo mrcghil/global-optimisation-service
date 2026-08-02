@@ -8,6 +8,17 @@
 #include "goss/solver/ipopt_solver.hpp"
 #include "transcription/ocp_fixtures.hpp"
 
+// File-scope functor used by RejectsPathConstraints.
+// Must be at namespace scope — C++17 prohibits templated member functions in local classes.
+struct TrapSinglePathConstraint {
+    template <typename T>
+    std::vector<T> operator()(const std::vector<T>& x,
+                               const std::vector<T>& /*u*/,
+                               T /*t*/) const {
+        return { x[0] };
+    }
+};
+
 TEST(Trapezoidal, SolvesExponentialDecay) {
     const double x0 = 1.0, tf = 1.0;
     const std::size_t intervals = 40;
@@ -135,5 +146,39 @@ TEST(Trapezoidal, RejectsAlgebraicVariables) {
     // The uniform overload delegates to the non-uniform primary; both reject the DAE
     // problem via the guard in the primary (non-uniform) compile overload.
     EXPECT_THROW(goss::transcription::Trapezoidal::compile(ocp, "trap_dae_guard"),
+                 goss::transcription::TranscriptionError);
+}
+
+// Guard test: Trapezoidal::compile must throw TranscriptionError when num_path_constraints > 0.
+// We construct a 4-param OcpProblem with TrapSinglePathConstraint (file scope) and set
+// num_path_constraints=1. The guard fires on num_path_constraints>0 before any codegen.
+TEST(Trapezoidal, RejectsPathConstraints) {
+    using OcpWithPath = goss::transcription::OcpProblem<
+        goss::transcription::test::ExpDecayDynamics,
+        goss::transcription::test::ZeroCost,
+        goss::transcription::NoAlgebraicResiduals,
+        TrapSinglePathConstraint>;
+
+    OcpWithPath ocp;
+    ocp.num_states = 1;
+    ocp.num_controls = 0;
+    ocp.dynamics = goss::transcription::test::ExpDecayDynamics{};
+    ocp.cost = goss::transcription::test::ZeroCost{};
+    ocp.mesh = goss::transcription::Mesh{0.0, 1.0, 4};
+    ocp.state_lower = { -1e19 };
+    ocp.state_upper = { 1e19 };
+    ocp.control_lower = {};
+    ocp.control_upper = {};
+    ocp.initial_state = { 1.0 };
+    ocp.initial_state_fixed = { 1.0 };
+    ocp.final_state = { 0.0 };
+    ocp.final_state_fixed = { 0.0 };
+    // Mark as path-constrained: guard fires on this field before any codegen.
+    ocp.num_path_constraints = 1;
+    ocp.path_constraint_lower = { 0.0 };
+    ocp.path_constraint_upper = { 1e19 };
+    ocp.path_constraints = TrapSinglePathConstraint{};
+
+    EXPECT_THROW(goss::transcription::Trapezoidal::compile(ocp, "trap_path_guard"),
                  goss::transcription::TranscriptionError);
 }
