@@ -220,7 +220,8 @@ add_executable(goss_accuracy_tests
   tests/accuracy/test_convergence_order.cpp
   tests/accuracy/test_invariants.cpp
   tests/accuracy/test_composition_accuracy.cpp
-  tests/accuracy/test_dae_accuracy.cpp)
+  tests/accuracy/test_dae_accuracy.cpp
+  tests/accuracy/test_path_constraint_accuracy.cpp)
 target_include_directories(goss_accuracy_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_accuracy_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
