@@ -998,3 +998,176 @@ TEST(ComposedModelMultiStateOwner, ZeroStateOwnersStillThrows) {
             cost_lambda),
         goss::model::ComponentError);
 }
+
+// ---- Task 4 (composition-quickwins): multi-derived topo-ordered evaluation tests ----
+
+// Task 4 — two derived quantities with a dependency chain: b depends on a.
+TEST(ComposedModelMultiDerived, TwoDerivedWithDependencyChainEvaluatesCorrectly) {
+    // Derived a = x[0] * 3.0; derived b depends on a: b = a + 1.0.
+    // Component dynamics: dx/dt = -b = -(a + 1.0) = -(3 * x[0] + 1).
+    // At x = [2.0]: a = 6.0, b = 7.0, dx/dt = -7.0.
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("x");
+    comp.add_derived(
+        "a",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return x[0] * 3.0; });
+    comp.input_derived("a");  // declares: b depends on a
+    comp.add_derived(
+        "b",
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) {
+            return d[0] + 1.0;  // d[0] is a (topo index 0)
+        });
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) {
+            return std::vector<double>{ -d[1] };  // d[1] is b (topo index 1)
+        });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto derived_a_lambda = [](const auto& x, const auto& /*u*/,
+                                const auto& /*d*/, auto /*t*/) {
+        return x[0] * decltype(x[0])(3.0);
+    };
+    // derived_b_lambda: d is the deps_so_far slice — contains only d[0] = a.
+    auto derived_b_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                                const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return d[0] + T(1.0);
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return std::vector<T>{ -d[1] };  // d[1] is b in the full deriveds vector
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_a_lambda, derived_b_lambda),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
+
+    EXPECT_EQ(ocp.num_states, 1u);
+    std::vector<double> x_test{ 2.0 }, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    // a = 2.0 * 3.0 = 6.0; b = 6.0 + 1.0 = 7.0; dx/dt = -7.0
+    EXPECT_DOUBLE_EQ(dx[0], -7.0);
+}
+
+TEST(ComposedModelMultiDerived, TwoDerivedNoDependencyBothEvaluated) {
+    // Two independent derived quantities (no dependency between them).
+    // a = x[0]; b = x[0] * 2.0.
+    // dx/dt = a + b = x[0] + 2 * x[0] = 3 * x[0].
+    // At x = [4.0]: dx/dt = 12.0.
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("x");
+    comp.add_derived(
+        "a",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return x[0]; });
+    comp.add_derived(
+        "b",
+        [](const std::vector<double>& x, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return x[0] * 2.0; });
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) {
+            return std::vector<double>{ d[0] + d[1] };  // a + b
+        });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 4);
+
+    auto derived_a = [](const auto& x, const auto& /*u*/,
+                         const auto& /*d*/, auto /*t*/) { return x[0]; };
+    auto derived_b = [](const auto& x, const auto& /*u*/,
+                         const auto& /*d*/, auto /*t*/) {
+        return x[0] * decltype(x[0])(2.0);
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return std::vector<T>{ d[0] + d[1] };
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_a, derived_b),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
+
+    std::vector<double> x_test{ 4.0 }, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    EXPECT_DOUBLE_EQ(dx[0], 12.0);  // a=4, b=8, dx=12
+}
+
+TEST(ComposedModelMultiDerived, ThreeDerivedLinearChainEvaluatesCorrectly) {
+    // Chain: c depends on b which depends on a.
+    // a = 1.0 (constant); b = a * 2.0 = 2.0; c = b + a = 3.0.
+    // dx/dt = c = 3.0.
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("x");
+    comp.add_derived(
+        "a",
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) { return 1.0; });
+    comp.input_derived("a");
+    comp.add_derived(
+        "b",
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) { return d[0] * 2.0; });
+    comp.input_derived("a");
+    comp.input_derived("b");
+    comp.add_derived(
+        "c",
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) { return d[0] + d[1]; });
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& d, double /*t*/) {
+            return std::vector<double>{ d[2] };  // dx/dt = c (topo index 2)
+        });
+    composed.add_component(std::move(comp));
+    composed.set_mesh(0.0, 1.0, 3);
+
+    auto derived_a = [](const auto& /*x*/, const auto& /*u*/,
+                         const auto& /*d*/, auto /*t*/) { return double(1.0); };
+    auto derived_b = [](const auto& /*x*/, const auto& /*u*/,
+                         const auto& d, auto /*t*/) {
+        return d[0] * decltype(d[0])(2.0);  // d[0]=a in deps_so_far
+    };
+    // c depends on a (topo 0) and b (topo 1); deps_so_far = [a, b]
+    auto derived_c = [](const auto& /*x*/, const auto& /*u*/,
+                         const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return d[0] + d[1];  // d[0]=a, d[1]=b in deps_so_far
+    };
+    auto dyn_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                          const auto& d, auto /*t*/) {
+        using T = typename std::decay_t<decltype(d)>::value_type;
+        return std::vector<T>{ d[2] };  // d[2]=c in the full deriveds vector
+    };
+    auto cost_lambda = [](const auto& /*x*/, const auto& /*u*/,
+                           const auto& /*d*/, auto /*t*/) { return double(0.0); };
+
+    auto ocp = composed.build(
+        goss::model::make_derived_exprs(derived_a, derived_b, derived_c),
+        goss::model::make_component_dyns(dyn_lambda),
+        cost_lambda);
+
+    std::vector<double> x_test{ 0.0 }, u_test{};
+    auto dx = ocp.dynamics(x_test, u_test, 0.0);
+    ASSERT_EQ(dx.size(), 1u);
+    EXPECT_DOUBLE_EQ(dx[0], 3.0);  // a=1, b=2, c=3
+}
