@@ -23,10 +23,22 @@ struct ResolvedDerivedEntry {
     std::string name;
     std::size_t global_component_index;
     std::size_t local_derived_index;
-    /// Global derived indices this entry depends on (populated by topo-sort).
-    // Reserved for the variadic multi-derived follow-on; v1 build() evaluates the single derived directly.
+    /// Global derived indices (topo order) this entry depends on.
+    /// Populated by Kahn's algorithm in compute_topo_ordered_deriveds() and consumed by
+    /// ComposedDynamicsFunctor/ComposedCostFunctor::evaluate_deriveds_impl to build the
+    /// deps_so_far slice passed to each derived-expression lambda during evaluation.
     std::vector<std::size_t> dependency_global_derived_indices;
 };
+
+// ---- Tuple-type detection helper (used by build() static_assert) ----
+
+/// Primary template: not a std::tuple specialization.
+template <typename T>
+struct is_std_tuple : std::false_type {};
+
+/// Partial specialisation that matches any std::tuple<Ts...>.
+template <typename... Ts>
+struct is_std_tuple<std::tuple<Ts...>> : std::true_type {};
 
 // ---- Variadic call-site helpers ----
 
@@ -239,6 +251,30 @@ class ComposedModel {
 
     // ---- Accessors for test assertions ----
 
+    /// Return the derived-quantity names in topological (dependency-first) order.
+    ///
+    /// This is the order in which build() expects the make_derived_exprs(...) lambdas to be
+    /// supplied: lambda at position i must compute the derived quantity named at position i.
+    /// Passing lambdas in a different order cannot be caught at runtime (lambdas are type-opaque)
+    /// and will produce silent incorrect results.
+    ///
+    /// If resolve_names() has not yet been called this method calls it first (which may throw
+    /// ComponentError if the component graph is invalid). After a successful build() call the
+    /// names are already populated and this method is cheap (no re-resolution needed).
+    std::vector<std::string> topo_ordered_derived_names() {
+        // resolve_names() is idempotent once names_resolved_==true; calling it here when
+        // not yet resolved ensures this accessor works standalone (before build()).
+        if (!names_resolved_) {
+            resolve_names();
+        }
+        std::vector<std::string> names;
+        names.reserve(topo_ordered_deriveds_.size());
+        for (const auto& resolved_entry : topo_ordered_deriveds_) {
+            names.push_back(resolved_entry.name);
+        }
+        return names;
+    }
+
     std::size_t total_num_states() const {
         std::size_t total = 0;
         for (const auto& component : components_) {
@@ -305,9 +341,30 @@ class ComposedModel {
     auto build(DerivedTuple derived_expr_tuple,
                DynTuple     component_dyn_tuple,
                CostFn       combined_cost) {
+        // Enforce that callers use the make_derived_exprs/make_component_dyns wrappers.
+        // Without this, a caller that accidentally passes a raw lambda (or a mismatched
+        // container) gets an obscure tuple_size_v error deep inside the functor; this
+        // static_assert surfaces the problem immediately with a clear message.
+        static_assert(is_std_tuple<DerivedTuple>::value,
+                      "build() expects make_derived_exprs(...) as the first argument "
+                      "— wrap your derived-expression lambdas with make_derived_exprs(...)");
+        static_assert(is_std_tuple<DynTuple>::value,
+                      "build() expects make_component_dyns(...) as the second argument "
+                      "— wrap your dynamics lambdas with make_component_dyns(...)");
+
         prepare_build();
 
         // I2 guard: number of derived-expr lambdas must equal total derived quantities declared.
+        //
+        // WHY ORDER CANNOT BE CHECKED AT RUNTIME: the lambdas in DerivedTuple are type-opaque
+        // (each is a distinct, unnamed closure type). There is no portable way to ask a lambda
+        // "which derived quantity do you compute?" at runtime or compile time. The contract is
+        // therefore purely positional: lambda at tuple index i must compute the derived quantity
+        // at topo position i in topo_ordered_deriveds_. Kahn's algorithm guarantees that
+        // dependencies always precede dependents in that list, but it CANNOT verify that the
+        // caller's lambdas are in the same order. The caller's responsibility is to pass lambdas
+        // in the order returned by topo_ordered_derived_names(). Violating this contract produces
+        // silent wrong results (each lambda is wired to the wrong dependency set) — not a crash.
         {
             const std::size_t num_provided_derived_exprs = std::tuple_size_v<DerivedTuple>;
             const std::size_t num_declared_deriveds      = topo_ordered_deriveds_.size();
@@ -318,7 +375,11 @@ class ComposedModel {
                     " derived quantity/ies declared across all components, but " +
                     std::to_string(num_provided_derived_exprs) +
                     " derived-expression lambda(s) provided to build(). "
-                    "Wrap derived lambdas with make_derived_exprs(...) in topological order.");
+                    "Wrap derived lambdas with make_derived_exprs(...) in the topological order "
+                    "returned by topo_ordered_derived_names(). Passing lambdas in the wrong order "
+                    "cannot be detected at runtime (lambdas are type-opaque) and will produce "
+                    "silent incorrect results. Call topo_ordered_derived_names() to inspect the "
+                    "required lambda ordering before calling build().");
             }
         }
 

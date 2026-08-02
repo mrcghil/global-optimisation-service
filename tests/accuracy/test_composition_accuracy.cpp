@@ -119,13 +119,11 @@ TEST(CompositionAccuracy, TwoStateOwnerTwoDerivedClosedFormOptimalCost) {
     // d0 = global_x[0] + global_x[1]; no declared dependencies (no input_derived calls).
     auto derived_d0 = [](const auto& global_x, const auto& /*u*/,
                           const auto& /*deps_so_far*/, auto /*t*/) {
-        using T = typename std::decay_t<decltype(global_x)>::value_type;
         return global_x[0] + global_x[1];
     };
     // d1 = global_x[0] - global_x[1]; also no declared dependencies.
     auto derived_d1 = [](const auto& global_x, const auto& /*u*/,
                           const auto& /*deps_so_far*/, auto /*t*/) {
-        using T = typename std::decay_t<decltype(global_x)>::value_type;
         return global_x[0] - global_x[1];
     };
 

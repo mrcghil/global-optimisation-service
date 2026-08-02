@@ -1110,6 +1110,54 @@ TEST(ComposedModelMultiDerived, TwoDerivedNoDependencyBothEvaluated) {
     EXPECT_DOUBLE_EQ(dx[0], 12.0);  // a=4, b=8, dx=12
 }
 
+// ---- I-1 regression: topo_ordered_derived_names() reflects dependency order ----
+
+// A model where insertion order of derived quantities in the component differs from
+// topological (dependency-first) order. Specifically: component registers 'b' first,
+// then 'a', but declares that 'b' depends on 'a'. Kahn's algorithm must produce the
+// topo order [a, b], regardless of the insertion order [b, a].
+//
+// This test guards against the silent-wrong-result footgun described in I-1: if a
+// caller passes make_derived_exprs(lambda_b, lambda_a) — matching insertion order —
+// instead of make_derived_exprs(lambda_a, lambda_b) — matching topo order — the I2
+// count guard passes but the wrong lambda is wired to each dependency set.
+// topo_ordered_derived_names() lets the caller verify the required order before build().
+TEST(ComposedModelVariadic, TopoOrderedDerivedNamesReflectsDependencyOrder) {
+    // 'b' is declared first in the component, but 'b' depends on 'a', so 'a' must
+    // appear first in the topological order returned by topo_ordered_derived_names().
+    goss::model::ComposedModel composed;
+
+    goss::model::Component comp("c");
+    comp.add_state("x");
+    // 'b' is registered before 'a' in insertion order, but declares a dependency on 'a'.
+    // insert order: b=0, a=1; topo order must be: a=0, b=1.
+    comp.input_derived("a");  // b depends on a — must be declared before add_derived("b")
+    comp.add_derived(
+        "b",
+        [](const auto& /*x*/, const auto& /*u*/, const auto& d, double /*t*/) {
+            return d[0] * 2.0;  // d[0] = a (dependency)
+        });
+    comp.add_derived(
+        "a",
+        [](const auto& x, const auto& /*u*/, const auto& /*d*/, double /*t*/) {
+            return x[0];
+        });
+    comp.set_dynamics(
+        [](const std::vector<double>& /*x*/, const std::vector<double>& /*u*/,
+           const std::vector<double>& /*d*/, double /*t*/) {
+            return std::vector<double>{ 0.0 };
+        });
+    composed.add_component(std::move(comp));
+
+    const std::vector<std::string> topo_names = composed.topo_ordered_derived_names();
+
+    // Dependency 'a' must precede dependent 'b' in topo order, regardless of
+    // insertion order ('b' was inserted before 'a' in the component above).
+    ASSERT_EQ(topo_names.size(), 2u);
+    EXPECT_EQ(topo_names[0], "a");  // dependency first
+    EXPECT_EQ(topo_names[1], "b");  // dependent second
+}
+
 TEST(ComposedModelMultiDerived, ThreeDerivedLinearChainEvaluatesCorrectly) {
     // Chain: c depends on b which depends on a.
     // a = 1.0 (constant); b = a * 2.0 = 2.0; c = b + a = 3.0.
