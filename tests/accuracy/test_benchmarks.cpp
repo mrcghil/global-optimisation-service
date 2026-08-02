@@ -75,7 +75,7 @@ constexpr double kBrachObjectiveTolerance     = 5e-3;  // WHY 5e-3: Lagrange-vs-
                                                         //   formulation introduces a
                                                         //   small systematic offset.
 constexpr std::size_t kBrachNumIntervals      = 80;
-constexpr double kBrachInitialTimeGuess       = 0.35;  // near the known optimum
+constexpr double kBrachInitialTimeGuess       = 0.35;  // below the known optimum (~0.5829)
 }  // namespace
 
 TEST(Benchmarks, BrachistochroneObjectiveMatchesPublished) {
@@ -108,8 +108,6 @@ TEST(Benchmarks, BrachistochroneObjectiveMatchesPublished) {
 
     auto dynamics = [](const auto& state_vec, const auto& control_vec, auto /*tau*/) {
         using ScalarT = typename std::decay_t<decltype(state_vec)>::value_type;
-        const ScalarT x_pos      = state_vec[0];
-        const ScalarT y_pos      = state_vec[1];
         const ScalarT speed      = state_vec[2];
         const ScalarT time_flight = state_vec[3];
         const ScalarT angle      = control_vec[0];

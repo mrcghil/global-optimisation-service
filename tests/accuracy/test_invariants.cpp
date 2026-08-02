@@ -84,6 +84,12 @@ TEST(Invariants, HarmonicOscillatorEnergyConservedHermiteSimpson) {
     const auto trajectory = goss::accuracy::solve_and_extract_trajectory(
         compiled, /*initial_guess_value=*/0.5);
     ASSERT_FALSE(trajectory.states.empty());
+    // WHY: validate that the node-0 energy equals the analytic constant kHarmonicEnergyReference.
+    // Initial state is pinned (q(0)=1, p(0)=0) → E(0) = (1²+0²)/2 = 0.5 exactly.
+    // This assertion documents intent and ensures kHarmonicEnergyReference is not dead code.
+    EXPECT_NEAR(kHarmonicEnergyInvariant(trajectory.states[0], trajectory.controls[0]),
+                kHarmonicEnergyReference, 1e-14)
+        << "Node-0 energy must equal analytic reference 0.5 (initial state is pinned)";
     goss::accuracy::check_invariant_along_trajectory(
         trajectory, kHarmonicEnergyInvariant, kHarmonicEnergyTolerance);
 }
@@ -244,6 +250,12 @@ TEST(Invariants, TwoDHarmonicOscillatorAngularMomentumConserved) {
             [](const std::vector<double>& state, const std::vector<double>&) -> double {
                 return state[0] * state[3] - state[1] * state[2];
             };
+    // WHY: validate that node-0 angular momentum equals the analytic constant kExpectedAngMomentum.
+    // Initial state is pinned (x1=1, x2=0, v1=0, v2=1) → L_ang(0) = 1*1 - 0*0 = 1 exactly.
+    // This assertion documents intent and ensures kExpectedAngMomentum is not dead code.
+    EXPECT_NEAR(angular_momentum_invariant(trajectory.states[0], trajectory.controls[0]),
+                kExpectedAngMomentum, 1e-14)
+        << "Node-0 angular momentum must equal analytic reference 1.0 (initial state is pinned)";
     goss::accuracy::check_invariant_along_trajectory(
         trajectory, angular_momentum_invariant, kAngMomentumTol);
 }
