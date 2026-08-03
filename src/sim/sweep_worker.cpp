@@ -33,9 +33,13 @@ void append_scalar(std::vector<char>& buffer, const T value) {
 }
 
 /// Reads sizeof(T) bytes from `data` at byte offset `offset` into `out`,
-/// then advances `offset` by sizeof(T).
+/// then advances `offset` by sizeof(T).  `buf_size` is the total buffer length;
+/// throws SimError if the requested range exceeds it (truncated payload).
 template <typename T>
-void read_scalar(const char* data, std::size_t& offset, T& out) {
+void read_scalar(const char* data, std::size_t& offset, T& out,
+                 std::size_t buf_size) {
+    if (offset + sizeof(T) > buf_size)
+        throw SimError("truncated sweep-point payload");
     std::memcpy(&out, data + offset, sizeof(T));
     offset += sizeof(T);
 }
@@ -52,10 +56,15 @@ void append_double_vector(std::vector<char>& buffer,
 }
 
 /// Reads a length-prefixed vector of doubles from `data` at `offset`.
+/// `buf_size` is the total buffer length; throws SimError on truncation or
+/// on a corrupt length that would drive an oversized memcpy.
 void read_double_vector(const char* data, std::size_t& offset,
-                        std::vector<double>& out) {
+                        std::vector<double>& out, std::size_t buf_size) {
     std::size_t count = 0;
-    read_scalar(data, offset, count);
+    read_scalar(data, offset, count, buf_size);
+    // Validate that count * sizeof(double) bytes actually remain before reading.
+    if (count * sizeof(double) > buf_size - offset)
+        throw SimError("truncated sweep-point payload");
     out.resize(count);
     if (count > 0) {
         std::memcpy(out.data(), data + offset, count * sizeof(double));
@@ -71,9 +80,15 @@ void append_string(std::vector<char>& buffer, const std::string& text) {
 }
 
 /// Reads a length-prefixed string from `data` at `offset`.
-void read_string(const char* data, std::size_t& offset, std::string& out) {
+/// `buf_size` is the total buffer length; throws SimError on truncation or
+/// on a corrupt length that would drive an oversized copy.
+void read_string(const char* data, std::size_t& offset, std::string& out,
+                 std::size_t buf_size) {
     std::size_t length = 0;
-    read_scalar(data, offset, length);
+    read_scalar(data, offset, length, buf_size);
+    // Validate that `length` chars actually remain before reading.
+    if (length > buf_size - offset)
+        throw SimError("truncated sweep-point payload");
     out.assign(data + offset, length);
     offset += length;
 }
@@ -107,17 +122,23 @@ std::vector<char> serialize_sweep_point(const SweepPoint& point) {
 
 SweepPoint deserialize_sweep_point(const std::vector<char>& bytes) {
     SweepPoint point;
-    const char* data = bytes.data();
-    std::size_t offset = 0;
+    const char* data       = bytes.data();
+    const std::size_t size = bytes.size();
+    std::size_t offset     = 0;
 
     int status_as_int = 0;
-    read_scalar(data, offset, status_as_int);
+    read_scalar(data, offset, status_as_int, size);
     point.status = static_cast<solver::SolverStatus>(status_as_int);
 
-    read_scalar(data, offset, point.objective_value);
-    read_double_vector(data, offset, point.parameters);
-    read_double_vector(data, offset, point.x);
-    read_string(data, offset, point.message);
+    read_scalar(data, offset, point.objective_value, size);
+    read_double_vector(data, offset, point.parameters, size);
+    read_double_vector(data, offset, point.x, size);
+    read_string(data, offset, point.message, size);
+
+    // Defense in depth: a well-formed payload must be consumed exactly.
+    if (offset != size)
+        throw SimError("sweep-point payload has trailing bytes");
+
     return point;
 }
 
@@ -167,14 +188,23 @@ SweepPoint solve_point_in_child(nlp::NLPProblem& problem,
 
         // Write all bytes — loop to handle partial writes (POSIX guarantees
         // writes up to PIPE_BUF are atomic, but larger payloads may be split).
+        // On error (bytes_written < 0, e.g. EPIPE), close the write fd and
+        // _exit(1) immediately so the parent sees an empty buffer and returns a
+        // clean Failure — never leave a partial payload for the parent to parse.
         std::size_t total_written = 0;
         while (total_written < serialized_bytes.size()) {
             const ssize_t bytes_written = ::write(
                 pipe_fds[1],
                 serialized_bytes.data() + total_written,
                 serialized_bytes.size() - total_written);
-            if (bytes_written <= 0) break;  // write error — parent will detect empty buffer
-            total_written += static_cast<std::size_t>(bytes_written);
+            if (bytes_written < 0) {
+                ::close(pipe_fds[1]);
+                ::_exit(1);
+            }
+            // bytes_written == 0 should not occur on a pipe, but treat it as a
+            // stall and retry rather than silently breaking.
+            if (bytes_written > 0)
+                total_written += static_cast<std::size_t>(bytes_written);
         }
         ::close(pipe_fds[1]);
 

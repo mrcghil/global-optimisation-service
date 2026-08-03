@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include "goss/sim/sweep_worker.hpp"
+#include "goss/sim/errors.hpp"
 
 // Additional headers needed for the fork-solve test.
 #include "goss/model/model.hpp"
@@ -59,4 +60,36 @@ TEST(SweepWorker, SolvesOnePointInChildProcess) {
     EXPECT_EQ(point.status, goss::solver::SolverStatus::Success);
     EXPECT_EQ(point.parameters, (std::vector<double>{2.0}));
     EXPECT_GT(point.objective_value, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Truncated buffer — regression guard for parent-crash bug
+//
+// A child that crashes mid-write leaves a partial (non-empty) payload in the
+// pipe.  deserialize_sweep_point must throw SimError rather than memcpy past
+// the buffer end (UB / SIGSEGV in the parent).
+// ---------------------------------------------------------------------------
+
+TEST(SweepWorker, DeserializeRejectsTruncatedBuffer) {
+    // Build a valid SweepPoint and serialize it so we have a known-good payload.
+    goss::sim::SweepPoint point;
+    point.parameters      = {1.0, 2.0};
+    point.status          = goss::solver::SolverStatus::Success;
+    point.objective_value = 3.14;
+    point.x               = {0.1, 0.2, 0.3};
+    point.message         = "ok";
+
+    const auto full_bytes = goss::sim::serialize_sweep_point(point);
+    ASSERT_GT(full_bytes.size(), 1u)
+        << "Serialized payload is unexpectedly tiny; test pre-condition failed";
+
+    // Half-truncated: first serialized.size()/2 bytes (simulates mid-write crash).
+    const std::vector<char> half_truncated(
+        full_bytes.begin(),
+        full_bytes.begin() + static_cast<std::ptrdiff_t>(full_bytes.size() / 2));
+    EXPECT_THROW(goss::sim::deserialize_sweep_point(half_truncated), goss::sim::SimError);
+
+    // Single-byte buffer: extreme truncation.
+    const std::vector<char> one_byte(full_bytes.begin(), full_bytes.begin() + 1);
+    EXPECT_THROW(goss::sim::deserialize_sweep_point(one_byte), goss::sim::SimError);
 }
