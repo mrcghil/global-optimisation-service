@@ -108,3 +108,61 @@ Task 2 wraps this mechanism in the `CppADCGBackend` public interface:
   `z`-vector tail before every `eval()` / `jacobian()` / `hessian()` call.
 - The upper-layer abstraction is identical regardless of mechanism; Task 2
   implements it using the pinned-variable slot approach documented above.
+
+---
+
+## Process-Pool Rationale for the Parallel Sweep Executor
+
+**Date:** 2026-08-03
+**Task:** Task 6 of the parallel-sweep-harness plan
+
+The sweep executor (`run_sweep_parallel`) uses a bounded pool of **forked child
+processes** rather than threads. The key reasons:
+
+- **`GenericModel` per-call mutation (not thread-safe to share).**
+  `CppAD::cg::GenericModel<double>` holds internal mutable state that is updated
+  on every `ForwardZero` / `SparseJacobian` / `SparseHessian` call. Sharing a
+  single compiled model across threads without external locking would produce
+  data races; creating one copy per thread would require recompiling the `.so`,
+  defeating compile-once.
+
+- **IPOPT/MA57 static and global state.**
+  IPOPT and its linear solver back-ends (HSL MA57, MUMPS) hold global/static
+  data structures that are not designed for concurrent use from multiple threads
+  in the same process.  Separate processes give each worker an isolated address
+  space at no extra synchronization cost.
+
+- **Fork inherits the compiled `.so` copy-on-write — no recompilation in
+  children.**
+  The parent compiles the `CompiledOcp` exactly once before forking.  Each child
+  inherits the loaded shared-library image via the OS copy-on-write page mapping,
+  so the generated C code is JIT-compiled once and reused across all workers.
+  The compile-once requirement is preserved by design.
+
+- **Child exits via `::_exit` to avoid running the parent's atexit/global-dtor
+  cleanup.**
+  Using `::_exit` (rather than `exit` or a normal return) prevents the child from
+  flushing the parent's `FILE*` buffers, running `atexit` handlers, or invoking
+  global destructors that belong to the parent context.  This avoids double-free
+  and double-flush hazards.
+
+- **Results serialized over a pipe (same-host binary layout).**
+  Each child writes a `SweepPoint` over a `pipe(2)` file descriptor using a
+  compact binary serialization.  Because parent and child share the same
+  architecture and ABI the layout is identical; no cross-machine portability is
+  needed.
+
+- **The pool is bounded, order-preserving, and matches the serial oracle.**
+  Concurrency is capped to `SweepConfig::max_parallel_workers` live children.
+  Results are stored at pre-assigned indices so `result.points[i]` always
+  corresponds to `parameter_grid[i]`, regardless of child completion order.
+  The end-to-end test (`SweepWorkflow.TwoDimensionalParallelMatchesSerial`)
+  verifies this by comparing every point against `run_sweep_serial` over the
+  same `make_grid` output.
+
+**Condition to revisit a thread-pool executor:**
+If a confirmed thread-safe linear solver (e.g. Intel Pardiso with per-thread
+data) is available, and `NLPProblem` instances can be cheaply cloned per thread
+(avoiding the shared-model race), a thread-pool executor could replace the
+process pool and eliminate fork/pipe overhead.  Until then the process pool is
+the correct first target for CPU-parallel sweep throughput.
