@@ -62,8 +62,12 @@ void read_double_vector(const char* data, std::size_t& offset,
                         std::vector<double>& out, std::size_t buf_size) {
     std::size_t count = 0;
     read_scalar(data, offset, count, buf_size);
-    // Validate that count * sizeof(double) bytes actually remain before reading.
-    if (count * sizeof(double) > buf_size - offset)
+    // Validate that enough bytes remain before reading.  Division form avoids
+    // the integer overflow that a multiply check would have when count is near
+    // SIZE_MAX / sizeof(double): a corrupt/malicious count would wrap to a small
+    // value, pass the multiply check, and drive an oversized memcpy.
+    // read_scalar guarantees offset <= buf_size, so buf_size - offset is safe.
+    if (count > (buf_size - offset) / sizeof(double))
         throw SimError("truncated sweep-point payload");
     out.resize(count);
     if (count > 0) {

@@ -1,5 +1,8 @@
 // tests/sim/test_sweep_worker.cpp
 #include <gtest/gtest.h>
+#include <cstddef>
+#include <cstring>
+#include <limits>
 #include <vector>
 #include "goss/sim/sweep_worker.hpp"
 #include "goss/sim/errors.hpp"
@@ -92,4 +95,43 @@ TEST(SweepWorker, DeserializeRejectsTruncatedBuffer) {
     // Single-byte buffer: extreme truncation.
     const std::vector<char> one_byte(full_bytes.begin(), full_bytes.begin() + 1);
     EXPECT_THROW(goss::sim::deserialize_sweep_point(one_byte), goss::sim::SimError);
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Overflow-form count rejected — regression guard for multiply-overflow
+//
+// A corrupt/malicious nparams value near SIZE_MAX / sizeof(double) would wrap
+// to a small number when multiplied by sizeof(double), pass a multiply-based
+// bounds check, and drive an OOB memcpy.  The division-form check must reject
+// this without performing any multiply.
+//
+// Buffer layout matches serialize_sweep_point:
+//   [int status][double objective][size_t nparams][...no doubles follow...]
+// ---------------------------------------------------------------------------
+
+TEST(SweepWorker, DeserializeRejectsOverflowingVectorCount) {
+    // Craft a byte buffer with a valid status + objective prefix followed by
+    // a nparams field set to a value that would overflow sizeof(double) multiply.
+    const std::size_t overflow_count = std::numeric_limits<std::size_t>::max() / 4;
+
+    std::vector<char> buffer;
+    buffer.resize(sizeof(int) + sizeof(double) + sizeof(std::size_t));
+
+    std::size_t write_pos = 0;
+
+    // [int status]
+    const int status_val = 0;
+    std::memcpy(buffer.data() + write_pos, &status_val, sizeof(int));
+    write_pos += sizeof(int);
+
+    // [double objective]
+    const double obj_val = 0.0;
+    std::memcpy(buffer.data() + write_pos, &obj_val, sizeof(double));
+    write_pos += sizeof(double);
+
+    // [size_t nparams] — set to a value that overflows when multiplied by
+    // sizeof(double); no actual double bytes follow.
+    std::memcpy(buffer.data() + write_pos, &overflow_count, sizeof(std::size_t));
+
+    EXPECT_THROW(goss::sim::deserialize_sweep_point(buffer), goss::sim::SimError);
 }
