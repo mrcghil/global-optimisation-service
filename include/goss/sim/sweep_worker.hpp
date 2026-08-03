@@ -21,7 +21,40 @@ std::vector<char> serialize_sweep_point(const SweepPoint& point);
 /// Deserializes a SweepPoint previously produced by serialize_sweep_point.
 SweepPoint deserialize_sweep_point(const std::vector<char>& bytes);
 
+/// Handle returned by launch_worker identifying the live child and its pipe.
+struct WorkerHandle {
+    pid_t pid;
+    int   read_fd;
+};
+
+/// Forks a child that applies `parameters`, solves, and writes the serialized
+/// SweepPoint to a pipe.  Returns the child's pid and the parent's read-end fd.
+///
+/// The child calls ::_exit(0) when done — no atexit handlers or global/static
+/// destructors run in the child, so IPOPT/CppADCG static state is safe.
+///
+/// Throws SimError if pipe() or fork() fails.  Parameters are applied INSIDE
+/// the child only — the parent's NLPProblem is not mutated.
+WorkerHandle launch_worker(
+    nlp::NLPProblem& problem,
+    const model::ParameterValidator& validator,
+    solver::Solver& solver,
+    const std::vector<double>& parameters,
+    const std::vector<double>& initial_guess);
+
+/// Drains the pipe identified by `handle.read_fd` to EOF, reaps the child
+/// with waitpid, and deserializes the SweepPoint.
+///
+/// If the child crashed (empty pipe buffer), returns a SweepPoint with
+/// status=Failure whose message names the killing signal or exit code.
+/// Never throws for child-side failures; throws SimError only on
+/// deserialization corruption.
+SweepPoint collect_worker(const WorkerHandle& handle,
+                          const std::vector<double>& parameters);
+
 /// Runs ONE parameter point in a freshly forked child process.
+///
+/// Convenience wrapper: launch_worker + immediate collect_worker.
 ///
 /// The child:
 ///   1. Binds the parameter values via apply_parameters (validate + inject).
