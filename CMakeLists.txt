@@ -145,7 +145,8 @@ add_executable(goss_transcription_tests
   tests/transcription/test_mesh_refinement.cpp
   tests/transcription/test_lgl_nodes.cpp
   tests/transcription/test_hp_mesh.cpp
-  tests/transcription/test_hp_pseudospectral.cpp)
+  tests/transcription/test_hp_pseudospectral.cpp
+  tests/transcription/test_parametric_transcription.cpp)
 target_include_directories(goss_transcription_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_transcription_tests PRIVATE

@@ -11,6 +11,7 @@
 #include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
+#include "goss/transcription/invoke.hpp"
 #include "goss/transcription/variable_layout.hpp"
 
 namespace goss::transcription {
@@ -122,6 +123,8 @@ struct LegendreGaussLobatto {
 
         VariableLayout layout(ns, nc, nn);
 
+        const std::size_t np = ocp.num_parameters;
+
         // Determine the first collocation node.
         // When controls are present (nc > 0): collocate node 0 so that u_0 is
         // constrained by the ODE — omitting it lets the optimizer drive u_0 to zero
@@ -132,10 +135,11 @@ struct LegendreGaussLobatto {
         const std::size_t first_collocation_node = (nc > 0) ? 0 : 1;
         const std::size_t num_collocation_nodes  = nn - first_collocation_node;
 
-        // Packed functor — captures pre-computed D, t_lgl, weights by value.
+        // Packed functor — captures pre-computed D, t_lgl, weights, and np by value.
+        // Accepts (z, p) where p is the parameter vector (empty when np == 0).
         auto packed = [ocp, layout, ns, nc, nn, D, t_lgl,
                        lgl_weights_physical, half_duration,
-                       first_collocation_node, num_collocation_nodes](const auto& z) {
+                       first_collocation_node, num_collocation_nodes, np](const auto& z, const auto& p) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             // Outputs: 1 cost + num_collocation_nodes*ns defects
             std::vector<T> outputs;
@@ -156,7 +160,8 @@ struct LegendreGaussLobatto {
             T cost = T(0);
             for (std::size_t k = 0; k < nn; ++k) {
                 T tk = T(t_lgl[k]);
-                cost += T(lgl_weights_physical[k]) * ocp.cost(state_at(k), control_at(k), tk);
+                cost += T(lgl_weights_physical[k]) *
+                        detail::call_cost(ocp.cost, state_at(k), control_at(k), p, tk);
             }
             outputs.push_back(cost);
 
@@ -179,7 +184,7 @@ struct LegendreGaussLobatto {
             // Pre-compute dynamics at each node.
             std::vector<std::vector<T>> F(nn);
             for (std::size_t k = 0; k < nn; ++k)
-                F[k] = ocp.dynamics(state_at(k), control_at(k), T(t_lgl[k]));
+                F[k] = detail::call_dynamics(ocp.dynamics, state_at(k), control_at(k), p, T(t_lgl[k]));
 
             for (std::size_t k = first_collocation_node; k < nn; ++k) {
                 for (std::size_t s = 0; s < ns; ++s) {
@@ -193,8 +198,20 @@ struct LegendreGaussLobatto {
             return outputs;
         };
 
-        auto backend = std::make_unique<goss::ad::CppADCGBackend>(
-            packed, layout.total_variables(), model_name);
+        std::unique_ptr<goss::ad::CppADCGBackend> backend;
+        if (np > 0) {
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed, layout.total_variables(), np, ocp.parameter_defaults, model_name);
+        } else {
+            // Wrap the two-arg packed functor as one-arg (empty p) to reuse the
+            // existing single-argument constructor path unchanged.
+            auto packed_no_params = [packed](const auto& z) {
+                using T = typename std::decay_t<decltype(z)>::value_type;
+                return packed(z, std::vector<T>{});
+            };
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed_no_params, layout.total_variables(), model_name);
+        }
 
         // Variable bounds: per-node state and control bounds.
         const std::size_t nv = layout.total_variables();

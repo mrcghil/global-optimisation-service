@@ -9,6 +9,7 @@
 #include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
+#include "goss/transcription/invoke.hpp"
 #include "goss/transcription/variable_layout.hpp"
 
 namespace goss::transcription {
@@ -64,11 +65,16 @@ struct HermiteSimpson {
         // Per-interval hk = node_times[k+1] - node_times[k]; per-node tk = node_times[k].
         const std::vector<double> node_times = mesh.node_times;
 
-        // Packed functor: captures ocp, layout, and node_times by value (cheap functors).
+        const std::size_t np = ocp.num_parameters;
+
+        // Packed functor: captures ocp, layout, node_times, and np by value (cheap functors).
         // Generic lambda so it can be instantiated with the AD scalar type during recording.
+        // Accepts (z, p) where p is the parameter vector (empty when np == 0).
         // na is captured explicitly so the algebraic residual loop is zero-overhead when na==0.
         // npc captured alongside na so the path-constraint loop is zero-overhead when npc==0.
-        auto packed = [ocp, layout, ns, nc, ni, na, npc, node_times](const auto& z) {
+        // IMPORTANT: algebraic_residuals_functor and path_constraints are NOT threaded through
+        // call_dynamics/call_cost — they have their own fixed arities and are out of scope.
+        auto packed = [ocp, layout, ns, nc, ni, na, npc, node_times, np](const auto& z, const auto& p) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
             // Reserve: 1 cost + ni*ns defects + nn*na algebraic residuals + nn*npc path rows.
@@ -122,8 +128,8 @@ struct HermiteSimpson {
                 auto uk1 = control_at(k + 1);
 
                 // Dynamics at the left and right endpoints.
-                auto fk  = ocp.dynamics(xk, uk, tk);
-                auto fk1 = ocp.dynamics(xk1, uk1, tk1);
+                auto fk  = detail::call_dynamics(ocp.dynamics, xk,  uk,  p, tk);
+                auto fk1 = detail::call_dynamics(ocp.dynamics, xk1, uk1, p, tk1);
 
                 // Hermite interpolated midpoint state (compressed form — no decision variable):
                 //   x_mid[i] = 0.5*(x_k[i] + x_{k+1}[i]) + (hk/8)*(f_k[i] - f_{k+1}[i])
@@ -133,7 +139,7 @@ struct HermiteSimpson {
 
                 // Midpoint control and dynamics.
                 auto umid = midpoint_control(uk, uk1);
-                auto fmid = ocp.dynamics(xmid, umid, tmid);
+                auto fmid = detail::call_dynamics(ocp.dynamics, xmid, umid, p, tmid);
 
                 // Hermite-Simpson defect per state i:
                 //   x_{k+1}[i] - x_k[i] - (hk/6)*(f_k[i] + 4*f_mid[i] + f_{k+1}[i]) = 0
@@ -141,9 +147,9 @@ struct HermiteSimpson {
                     defects.push_back(xk1[i] - xk[i] - (hk / T(6)) * (fk[i] + T(4) * fmid[i] + fk1[i]));
 
                 // Simpson cost contribution for this interval.
-                T Lk   = ocp.cost(xk, uk, tk);
-                T Lmid = ocp.cost(xmid, umid, tmid);
-                T Lk1  = ocp.cost(xk1, uk1, tk1);
+                T Lk   = detail::call_cost(ocp.cost, xk,   uk,   p, tk);
+                T Lmid = detail::call_cost(ocp.cost, xmid, umid, p, tmid);
+                T Lk1  = detail::call_cost(ocp.cost, xk1,  uk1,  p, tk1);
                 cost += (hk / T(6)) * (Lk + T(4) * Lmid + Lk1);
             }
 
@@ -155,6 +161,8 @@ struct HermiteSimpson {
             // Algebraic residual constraints: g(x_k, u_k, alg_k, t_k) == 0 at every node k.
             // One equality constraint per algebraic variable per node.
             // These are added AFTER the defect rows so existing constraint indexing is unchanged.
+            // NOTE: algebraic_residuals_functor takes (x, u, alg, t) — parameters are NOT
+            // threaded here (out of scope; alg_vars slot is occupied by algebraic vars, not p).
             if (na > 0) {
                 for (std::size_t k = 0; k < nn_local; ++k) {
                     T tk = T(node_times[k]);
@@ -171,6 +179,7 @@ struct HermiteSimpson {
             // Evaluated AFTER algebraic rows so the index base is num_defects + num_alg_constraints.
             // Output order: node-major — all npc constraints for node 0, then node 1, etc.
             // path_constraints takes (x, u, t) — 3 args, no alg_vars (unlike algebraic_residuals_functor).
+            // NOTE: parameters are NOT threaded into path_constraints (out of scope for Task 5).
             if (npc > 0) {
                 for (std::size_t k = 0; k < nn_local; ++k) {
                     T tk = T(node_times[k]);
@@ -183,8 +192,20 @@ struct HermiteSimpson {
             return outputs;
         };
 
-        auto backend = std::make_unique<goss::ad::CppADCGBackend>(
-            packed, layout.total_variables(), model_name);
+        std::unique_ptr<goss::ad::CppADCGBackend> backend;
+        if (np > 0) {
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed, layout.total_variables(), np, ocp.parameter_defaults, model_name);
+        } else {
+            // Wrap the two-arg packed functor as one-arg (empty p) to reuse the
+            // existing single-argument constructor path unchanged.
+            auto packed_no_params = [packed](const auto& z) {
+                using T = typename std::decay_t<decltype(z)>::value_type;
+                return packed(z, std::vector<T>{});
+            };
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed_no_params, layout.total_variables(), model_name);
+        }
 
         // Variable bounds: per-node state and control bounds.
         const std::size_t nv = layout.total_variables();

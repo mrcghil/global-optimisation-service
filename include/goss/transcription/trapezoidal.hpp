@@ -9,6 +9,7 @@
 #include "goss/transcription/mesh.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"
+#include "goss/transcription/invoke.hpp"
 #include "goss/transcription/variable_layout.hpp"
 
 namespace goss::transcription {
@@ -58,9 +59,12 @@ struct Trapezoidal {
         // Per-interval hk = node_times[k+1] - node_times[k]; per-node tk = node_times[k].
         const std::vector<double> node_times = mesh.node_times;
 
-        // The packed functor: captures ocp, layout, and node_times by value.
+        const std::size_t np = ocp.num_parameters;
+
+        // The packed functor: captures ocp, layout, node_times, and np by value.
+        // Accepts (z, p) where p is the parameter vector (empty when np == 0).
         // Uses generic lambda so it can be instantiated with the AD type during recording.
-        auto packed = [ocp, layout, ns, nc, nn, ni, node_times](const auto& z) {
+        auto packed = [ocp, layout, ns, nc, nn, ni, node_times, np](const auto& z, const auto& p) {
             using T = typename std::decay_t<decltype(z)>::value_type;
             std::vector<T> outputs;
             outputs.reserve(1 + ni * ns);
@@ -84,8 +88,8 @@ struct Trapezoidal {
                 T tk  = T(node_times[k]);
                 T tk1 = T(node_times[k + 1]);
                 T hk  = tk1 - tk;
-                T Lk  = ocp.cost(state_at(k),     control_at(k),     tk);
-                T Lk1 = ocp.cost(state_at(k + 1), control_at(k + 1), tk1);
+                T Lk  = detail::call_cost(ocp.cost, state_at(k),     control_at(k),     p, tk);
+                T Lk1 = detail::call_cost(ocp.cost, state_at(k + 1), control_at(k + 1), p, tk1);
                 cost += T(0.5) * hk * (Lk + Lk1);
             }
             outputs.push_back(cost);
@@ -98,8 +102,8 @@ struct Trapezoidal {
                 T hk  = tk1 - tk;
                 auto xk  = state_at(k);
                 auto xk1 = state_at(k + 1);
-                auto fk  = ocp.dynamics(xk,  control_at(k),     tk);
-                auto fk1 = ocp.dynamics(xk1, control_at(k + 1), tk1);
+                auto fk  = detail::call_dynamics(ocp.dynamics, xk,  control_at(k),     p, tk);
+                auto fk1 = detail::call_dynamics(ocp.dynamics, xk1, control_at(k + 1), p, tk1);
                 for (std::size_t i = 0; i < ns; ++i) {
                     outputs.push_back(xk1[i] - xk[i] - T(0.5) * hk * (fk[i] + fk1[i]));
                 }
@@ -107,8 +111,20 @@ struct Trapezoidal {
             return outputs;
         };
 
-        auto backend = std::make_unique<goss::ad::CppADCGBackend>(
-            packed, layout.total_variables(), model_name);
+        std::unique_ptr<goss::ad::CppADCGBackend> backend;
+        if (np > 0) {
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed, layout.total_variables(), np, ocp.parameter_defaults, model_name);
+        } else {
+            // Wrap the two-arg packed functor as one-arg (empty p) to reuse the
+            // existing single-argument constructor path unchanged.
+            auto packed_no_params = [packed](const auto& z) {
+                using T = typename std::decay_t<decltype(z)>::value_type;
+                return packed(z, std::vector<T>{});
+            };
+            backend = std::make_unique<goss::ad::CppADCGBackend>(
+                packed_no_params, layout.total_variables(), model_name);
+        }
 
         // Bounds.
         const std::size_t nv = layout.total_variables();
