@@ -1,0 +1,35 @@
+---
+import convergence from '../data/convergence.json';
+
+type Row = {
+  scheme: string;
+  nodes: number;
+  error: number;
+  theoretical_rate: string;
+};
+
+const rows = convergence as Row[];
+const fmtSci = (n: number) => (n === 0 ? '0' : n.toExponential(2));
+const schemeLabel = (s: string) => ({ HermiteSimpson: 'Hermite–Simpson' }[s] ?? s);
+---
+
+<table>
+  <thead>
+    <tr>
+      <th>Scheme</th>
+      <th>Nodes</th>
+      <th>Observed error</th>
+      <th>Theoretical rate</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows.map((r) => (
+      <tr>
+        <td>{schemeLabel(r.scheme)}</td>
+        <td>{r.nodes}</td>
+        <td>{fmtSci(r.error)}</td>
+        <td>{r.theoretical_rate}</td>
+      </tr>
+    ))}
+  </tbody>
+</table>

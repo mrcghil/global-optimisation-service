@@ -1,0 +1,61 @@
+---
+title: Three entry points
+description: DSL, raw NLP, or extend goss at a seam.
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Depending on how much structure your problem has, there are three ways in.
+
+<Tabs>
+  <TabItem label="Declare an OCP (main path)">
+
+Describe states, controls, dynamics, constraints, and cost. This is the path
+for nearly all day-to-day use.
+
+```cpp
+Problem prob;
+auto q    = prob.add_state("queue_length");
+auto rate = prob.add_control("service_rate");
+prob.set_dynamics(q, [](auto& x, auto& u, auto t) {
+    return ARRIVAL_RATE - u[service_rate];
+});
+prob.add_path_constraint(q >= 0.0);
+prob.set_cost(integral(q + WEIGHT * rate * rate));
+
+auto nlp    = HermiteSimpson(num_nodes).compile(prob);
+auto result = IpoptAdapter().solve(nlp, sim::linear_guess(prob));
+```
+
+  </TabItem>
+  <TabItem label="General sparse NLP">
+
+No time or dynamics — just `min f(z)` subject to `g(z)`. Skip the DSL and
+transcription; the AD layer still supplies sparse derivatives automatically.
+
+```cpp
+NLPProblem nlp(num_vars, num_constraints);
+nlp.set_objective([](auto& z) { return /* ... */; });
+nlp.set_constraints([](auto& z) { return /* ... */; });
+nlp.set_bounds(zL, zU, gL, gU);
+auto result = IpoptAdapter().solve(nlp, z0);
+```
+
+  </TabItem>
+  <TabItem label="Extend at a seam">
+
+Need structure the DSL can't yet express? Add one piece at a seam — the core is
+untouched.
+
+| You have… | You implement… | Where |
+|---|---|---|
+| A new discretization scheme | a `Transcription` subclass | transcription |
+| Multiple linked phases | phase objects + linkage constraints | transcription |
+| Algebraic (DAE) constraints | residuals emitted at nodes | transcription |
+| A new solver to try | a `Solver` adapter | solver |
+| A faster AD backend | a backend behind the interface | AD |
+
+  </TabItem>
+</Tabs>

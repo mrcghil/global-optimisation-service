@@ -1,0 +1,44 @@
+---
+import benchmarks from '../data/benchmarks.json';
+
+type Row = {
+  scheme: string;
+  solver: string;
+  status: string;
+  objective: number;
+  elapsed_s: number;
+  validation_error: number;
+  num_variables: number;
+};
+
+const rows = benchmarks as Row[];
+const fmtSci = (n: number) => (n === 0 ? '0' : n.toExponential(2));
+const schemeLabel = (s: string) => ({ HermiteSimpson: 'Hermite–Simpson' }[s] ?? s);
+---
+
+<table>
+  <thead>
+    <tr>
+      <th>Scheme</th>
+      <th>Solver</th>
+      <th>Status</th>
+      <th>Objective</th>
+      <th>Time (s)</th>
+      <th>Validation error</th>
+      <th>Variables</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows.map((r) => (
+      <tr>
+        <td>{schemeLabel(r.scheme)}</td>
+        <td>{r.solver}</td>
+        <td>{r.status}</td>
+        <td>{fmtSci(r.objective)}</td>
+        <td>{r.elapsed_s.toFixed(4)}</td>
+        <td>{fmtSci(r.validation_error)}</td>
+        <td>{r.num_variables}</td>
+      </tr>
+    ))}
+  </tbody>
+</table>

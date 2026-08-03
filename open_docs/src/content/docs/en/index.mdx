@@ -1,0 +1,28 @@
+---
+title: goss
+description: A C++ direct-collocation solver for trajectory optimization.
+template: splash
+hero:
+  tagline: Declare an optimal-control problem; goss transcribes, differentiates, and solves it.
+  actions:
+    - text: What is goss?
+      link: /en/overview/what-is-goss/
+      icon: right-arrow
+    - text: First solve
+      link: /en/guides/first-solve/
+      icon: rocket
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Declare, don't derive" icon="pencil">
+    Describe states, controls, dynamics, constraints, and cost. goss builds the
+    NLP and its sparse derivatives for you.
+  </Card>
+  <Card title="Validated" icon="approve-check">
+    Every solve is independently re-checked by RK4 re-integration; schemes are
+    verified against known convergence orders.
+  </Card>
+</CardGrid>

@@ -1,0 +1,34 @@
+---
+title: What is goss?
+description: The problem class goss solves and the motivating example.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+goss is a C++ framework for large nonlinear optimization, focused on
+**optimal control and trajectory optimization** via direct collocation. You
+declare a problem's structure — states, controls, dynamics `f(x, u, t)`, path
+and boundary constraints, and a cost — and goss transcribes it into a large
+sparse Nonlinear Program (NLP), computes fast sparse derivatives, and hands the
+result to a solver (IPOPT or a derivative-free baseline).
+
+## The motivating example
+
+Model a queue: add a state (number of people in the queue), constrain it to be
+non-negative, define its dynamics, and solve for a control (the service rate)
+that minimizes a cost.
+
+<Aside type="note">
+You never write the NLP or any derivative by hand. goss discretizes time,
+assembles the decision vector, writes the defect constraints, detects
+sparsity, and generates the Jacobian and Hessian for you.
+</Aside>
+
+## Where goss fits
+
+goss is designed so that broader problem classes — multi-phase control,
+DAE/algebraic constraints, hybrid systems — are additive features rather than
+rewrites. See [Architecture](/en/overview/architecture/) for how that layering
+works.

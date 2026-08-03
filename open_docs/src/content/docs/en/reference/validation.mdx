@@ -1,0 +1,33 @@
+---
+title: Validation
+description: How goss verifies that a solve is actually correct.
+sidebar:
+  order: 1
+---
+
+import ConvergenceTable from '../../../../components/ConvergenceTable.astro';
+
+goss does not trust a solver's "converged" status alone. Correctness is
+established with independent oracles.
+
+## RK4 re-integration
+
+After a solve, goss re-integrates the dynamics with a fourth-order Runge–Kutta
+scheme, starting from the solved initial state and applying the solved controls,
+then measures the maximum deviation from the collocated trajectory. A correct
+solution has a small deviation; a corrupted one is flagged. This is an
+independent check of the transcription and solve — not a re-run of collocation.
+
+## Convergence order
+
+Refining the mesh must shrink the error at the scheme's theoretical rate
+(Trapezoidal `O(h²)`, Hermite–Simpson `O(h⁴)`). Observed errors:
+
+<ConvergenceTable />
+
+## Cross-scheme agreement and published optima
+
+goss also checks that different schemes converge to the same solution on
+well-posed problems, and validates the full model → transcription → NLP → AD →
+solver chain against a hand-ported subset of the Hock–Schittkowski problems,
+whose optima are published.
