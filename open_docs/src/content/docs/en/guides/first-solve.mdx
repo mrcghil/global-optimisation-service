@@ -1,0 +1,59 @@
+---
+title: Your first solve
+description: A conceptual walkthrough of a goss optimal-control program.
+sidebar:
+  order: 1
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This page walks through what a goss program looks like, using the queue
+example. It illustrates the API surface; it is not a runnable local recipe.
+
+<Steps>
+
+1. **Declare the state and control.**
+
+   ```cpp title="queue.cpp"
+   Problem prob;
+   auto q    = prob.add_state("queue_length");
+   auto rate = prob.add_control("service_rate");
+   ```
+
+2. **Define the dynamics** `f(x, u, t)` for each state.
+
+   ```cpp
+   prob.set_dynamics(q, [](auto& x, auto& u, auto t) {
+       return ARRIVAL_RATE - u[service_rate];
+   });
+   ```
+
+3. **Add constraints** — path constraints hold at every node; boundary
+   constraints pin endpoints.
+
+   ```cpp
+   prob.add_path_constraint(q >= 0.0);
+   prob.add_path_constraint(0.0 <= rate <= MAX_RATE);
+   prob.add_boundary_constraint(q.initial() == 10.0);
+   ```
+
+4. **Set the cost.**
+
+   ```cpp
+   prob.set_cost(integral(q + WEIGHT * rate * rate));
+   ```
+
+5. **Transcribe and solve.**
+
+   ```cpp
+   auto nlp    = HermiteSimpson(num_nodes).compile(prob);
+   auto result = IpoptAdapter().solve(nlp, sim::linear_guess(prob));
+   ```
+
+</Steps>
+
+<Aside type="tip">
+goss handles everything between step 5's two lines: time discretization,
+building the decision vector, defect constraints, sparsity detection, and
+derivative code generation.
+</Aside>
