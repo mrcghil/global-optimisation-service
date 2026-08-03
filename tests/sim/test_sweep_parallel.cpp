@@ -68,3 +68,70 @@ TEST(SweepParallel, InvalidPointsRecordedAtCorrectIndices) {
     EXPECT_NE(result.points[1].message.find("arrival_rate"), std::string::npos);
     EXPECT_EQ(result.points[2].status, goss::solver::SolverStatus::Success);
 }
+
+// Exercises the relaunch-after-completion path that triggers the iterator-
+// invalidation UB fixed in CRITICAL 1: grid size (8) > pool cap (2) forces
+// multiple rounds of "collect one → launch one" which can rehash live_workers
+// if the two-pass restructure is absent.  Results are validated against the
+// serial oracle to confirm correctness.
+TEST(SweepParallel, LargerGridExercisesRelaunchCycles) {
+    // 8-point grid, cap=2 → 6 relaunch cycles beyond the initial seed.
+    std::vector<std::vector<double>> grid = {
+        {1.0},{2.0},{3.0},{4.0},{5.0},{6.0},{7.0},{8.0}};
+
+    goss::model::Model model_s;
+    auto compiled_s = build_queue(model_s, "sweep_large_serial");
+    const auto z0_s = goss::sim::linear_guess(model_s, compiled_s.layout);
+    goss::solver::IpoptSolver solver_s;
+    auto serial = goss::sim::run_sweep_serial(
+        *compiled_s.problem, compiled_s.validator, solver_s, grid, z0_s);
+
+    goss::model::Model model_p;
+    auto compiled_p = build_queue(model_p, "sweep_large_parallel");
+    const auto z0_p = goss::sim::linear_guess(model_p, compiled_p.layout);
+    goss::solver::IpoptSolver solver_p;
+    goss::sim::SweepConfig config; config.max_parallel_workers = 2;
+    auto parallel = goss::sim::run_sweep_parallel(
+        *compiled_p.problem, compiled_p.validator, solver_p, grid, z0_p, config);
+
+    ASSERT_EQ(parallel.points.size(), serial.points.size());
+    for (std::size_t i = 0; i < grid.size(); ++i) {
+        EXPECT_EQ(parallel.points[i].parameters, serial.points[i].parameters)
+            << "parameter mismatch at index " << i;
+        EXPECT_EQ(parallel.points[i].status, serial.points[i].status)
+            << "status mismatch at index " << i;
+        EXPECT_NEAR(parallel.points[i].objective_value,
+                    serial.points[i].objective_value, 1e-6)
+            << "objective mismatch at index " << i;
+    }
+}
+
+// Degenerate case: pool cap larger than grid — all points launched in the seed
+// phase, no relaunch needed.  Validates cap=1 degenerates to serial-equivalent
+// ordering as well.
+TEST(SweepParallel, CapLargerThanGridStillCorrect) {
+    std::vector<std::vector<double>> grid = {{1.0},{3.0},{5.0}};
+
+    goss::model::Model model_s;
+    auto compiled_s = build_queue(model_s, "sweep_cap_large_serial");
+    const auto z0_s = goss::sim::linear_guess(model_s, compiled_s.layout);
+    goss::solver::IpoptSolver solver_s;
+    auto serial = goss::sim::run_sweep_serial(
+        *compiled_s.problem, compiled_s.validator, solver_s, grid, z0_s);
+
+    goss::model::Model model_p;
+    auto compiled_p = build_queue(model_p, "sweep_cap_large_parallel");
+    const auto z0_p = goss::sim::linear_guess(model_p, compiled_p.layout);
+    goss::solver::IpoptSolver solver_p;
+    // cap=100 >> grid.size()=3 — seeds all three immediately
+    goss::sim::SweepConfig config; config.max_parallel_workers = 100;
+    auto parallel = goss::sim::run_sweep_parallel(
+        *compiled_p.problem, compiled_p.validator, solver_p, grid, z0_p, config);
+
+    ASSERT_EQ(parallel.points.size(), serial.points.size());
+    for (std::size_t i = 0; i < grid.size(); ++i) {
+        EXPECT_EQ(parallel.points[i].status, serial.points[i].status);
+        EXPECT_NEAR(parallel.points[i].objective_value,
+                    serial.points[i].objective_value, 1e-6);
+    }
+}

@@ -3,6 +3,7 @@
 // so the public header remains platform-agnostic.
 #include "goss/sim/sweep_worker.hpp"
 
+#include <cerrno>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -240,6 +241,71 @@ WorkerHandle launch_worker(nlp::NLPProblem& problem,
     return WorkerHandle{pid, pipe_fds[0]};
 }
 
+// ---------------------------------------------------------------------------
+// drain_and_deserialize — shared by collect_worker and the pool's second pass.
+// ---------------------------------------------------------------------------
+
+/// Drains `read_fd` to EOF (closing it when done), then deserializes and
+/// returns the SweepPoint.
+///
+/// If the pipe yielded no data at all (child crashed before writing anything),
+/// returns a default-constructed Failure SweepPoint with an appropriate
+/// message and the supplied `parameters` filled in; the caller is responsible
+/// for refining the message after inspecting the waitpid status (signal vs
+/// exit code).
+///
+/// Throws SimError only if the accumulated data is non-empty but malformed
+/// (truncated payload / trailing bytes) — that is a real IO error, not a
+/// child-side failure.
+static SweepPoint drain_and_deserialize(int read_fd,
+                                        const std::vector<double>& parameters) {
+    std::vector<char> accumulated_buffer;
+    char read_chunk[4096];
+    ssize_t bytes_read = 0;
+    while ((bytes_read = ::read(read_fd, read_chunk, sizeof(read_chunk))) > 0)
+        accumulated_buffer.insert(accumulated_buffer.end(),
+                                  read_chunk, read_chunk + bytes_read);
+    ::close(read_fd);
+
+    if (accumulated_buffer.empty()) {
+        // Child exited/crashed without writing anything.
+        // Populate a baseline Failure point; the caller fills in the exact
+        // message after calling waitpid.
+        SweepPoint failure_point;
+        failure_point.parameters = parameters;
+        failure_point.status     = solver::SolverStatus::Failure;
+        failure_point.message    = "worker produced no output";
+        return failure_point;
+    }
+
+    return deserialize_sweep_point(accumulated_buffer);
+}
+
+/// Applies waitpid status to a SweepPoint that was returned by
+/// drain_and_deserialize with an empty buffer (status == Failure and message
+/// == "worker produced no output").  If the buffer was non-empty the point
+/// already carries the solver's own message and we leave it unchanged.
+///
+/// This helper ensures both the blocking path (collect_worker) and the pool
+/// path share identical crash-classification semantics.
+static void classify_crash(SweepPoint& point, int wait_status) {
+    // Only re-classify points that came from an empty buffer (no data written
+    // by the child).  A non-empty buffer means the child wrote a result — even
+    // if it exited non-zero, the deserialized message is more informative.
+    if (point.status != solver::SolverStatus::Failure ||
+        point.message != "worker produced no output")
+        return;
+
+    if (WIFSIGNALED(wait_status)) {
+        point.message =
+            "worker killed by signal " + std::to_string(WTERMSIG(wait_status));
+    } else {
+        point.message =
+            "worker produced no output (exit " +
+            std::to_string(WEXITSTATUS(wait_status)) + ")";
+    }
+}
+
 /// Drains `handle.read_fd` to EOF, reaps the child with waitpid, and
 /// deserializes the SweepPoint.
 ///
@@ -254,36 +320,13 @@ WorkerHandle launch_worker(nlp::NLPProblem& problem,
 /// itself finds a corrupt payload.
 SweepPoint collect_worker(const WorkerHandle& handle,
                           const std::vector<double>& parameters) {
-    std::vector<char> accumulated_buffer;
-    char read_chunk[4096];
-    ssize_t bytes_read = 0;
-    while ((bytes_read = ::read(handle.read_fd, read_chunk, sizeof(read_chunk))) > 0)
-        accumulated_buffer.insert(accumulated_buffer.end(),
-                                  read_chunk, read_chunk + bytes_read);
-    ::close(handle.read_fd);
+    SweepPoint point = drain_and_deserialize(handle.read_fd, parameters);
 
     int wait_status = 0;
     ::waitpid(handle.pid, &wait_status, 0);
 
-    // An empty buffer means the child crashed before writing anything.
-    // Return a classified Failure — never throw (child-side failures are results,
-    // not setup errors).
-    if (accumulated_buffer.empty()) {
-        SweepPoint failure_point;
-        failure_point.parameters = parameters;
-        failure_point.status     = solver::SolverStatus::Failure;
-        if (WIFSIGNALED(wait_status)) {
-            failure_point.message =
-                "worker killed by signal " + std::to_string(WTERMSIG(wait_status));
-        } else {
-            failure_point.message =
-                "worker produced no output (exit " +
-                std::to_string(WEXITSTATUS(wait_status)) + ")";
-        }
-        return failure_point;
-    }
-
-    return deserialize_sweep_point(accumulated_buffer);
+    classify_crash(point, wait_status);
+    return point;
 }
 
 /// Convenience wrapper: launch_worker followed by an immediate collect_worker.
@@ -363,80 +406,107 @@ SweepResult run_sweep_parallel(
     // and closed its write end), drain it to avoid the deadlock where the child
     // fills the OS pipe buffer and blocks in write() while the parent blocks in
     // waitpid().  We use select() to find a ready fd without reaping first.
-    while (!live_workers.empty()) {
-        // Build the fd_set for all live pipe read-ends.
-        // select() requires the highest fd + 1.
-        fd_set read_set;
-        FD_ZERO(&read_set);
-        int max_fd = -1;
-        for (const auto& kv : live_workers) {
-            const int fd = kv.second.handle.read_fd;
-            FD_SET(fd, &read_set);
-            if (fd > max_fd) max_fd = fd;
-        }
+    //
+    // CRITICAL 2 guard: if any exception escapes the loop body (e.g. SimError
+    // from a fork() failure inside try_launch_next), we must reap all still-live
+    // children before propagating the exception to avoid zombie processes and fd
+    // leaks.  The try/catch below handles this: on any exception it drains all
+    // remaining fds and calls waitpid for each live child (best-effort — errors
+    // during cleanup are ignored), then rethrows the original exception.
+    try {
+        while (!live_workers.empty()) {
+            // Build the fd_set for all live pipe read-ends.
+            // select() requires the highest fd + 1.
+            fd_set read_set;
+            FD_ZERO(&read_set);
+            int max_fd = -1;
+            for (const auto& kv : live_workers) {
+                const int fd = kv.second.handle.read_fd;
+                FD_SET(fd, &read_set);
+                if (fd > max_fd) max_fd = fd;
+            }
 
-        // Block until at least one pipe becomes readable (EOF or data available).
-        // No timeout — we always have live children at this point.
-        const int ready_count = ::select(max_fd + 1, &read_set, nullptr, nullptr, nullptr);
-        if (ready_count <= 0) {
-            // select() was interrupted (EINTR) or hit an unexpected error.
-            // Retry to avoid a stale loop.
-            continue;
-        }
-
-        // Collect ALL ready fds in this round (avoids repeated iterations when
-        // multiple children finish nearly simultaneously).
-        for (auto it = live_workers.begin(); it != live_workers.end(); ) {
-            const int fd = it->second.handle.read_fd;
-            if (!FD_ISSET(fd, &read_set)) {
-                ++it;
+            // Block until at least one pipe becomes readable (EOF or data available).
+            // No timeout — we always have live children at this point.
+            const int ready_count = ::select(max_fd + 1, &read_set, nullptr, nullptr, nullptr);
+            if (ready_count < 0) {
+                // IMPORTANT 3: distinguish EINTR (harmless signal interrupt, retry)
+                // from real select() errors (EBADF, ENOMEM, etc.) which would cause
+                // an infinite busy-spin if silently retried.
+                if (errno == EINTR) continue;
+                throw SimError(std::string("select() failed: ") + std::strerror(errno));
+            }
+            if (ready_count == 0) {
+                // Timeout — only possible if a timeout was supplied (we pass nullptr
+                // so this should never happen, but guard for safety).
                 continue;
             }
 
-            const LiveWorkerEntry entry = it->second;
-            it = live_workers.erase(it);  // remove before launching next
+            // CRITICAL 1 — two-pass to avoid iterator invalidation:
+            //
+            // First pass: scan live_workers and collect all ready entries into a
+            // local vector WITHOUT mutating the map.  Inserting into an
+            // unordered_map during iteration can trigger a rehash that invalidates
+            // all iterators (UB).  try_launch_next() emplaces into live_workers,
+            // so it must NOT be called while iterating the map.
+            //
+            // Second pass: for each collected entry, erase it from live_workers,
+            // drain+reap+record the result, then call try_launch_next().  By the
+            // time try_launch_next emplaces a new entry the first-pass scan is
+            // already complete and no live iterator exists.
+            struct ReadyEntry {
+                pid_t       pid;
+                int         read_fd;
+                std::size_t grid_index;
+            };
+            std::vector<ReadyEntry> ready_entries;
 
-            // Drain-before-waitpid: the pipe may still have buffered data even
-            // though select() said it's readable; drain to EOF fully.
-            std::vector<char> accumulated_buffer;
-            {
-                char    read_chunk[4096];
-                ssize_t bytes_read = 0;
-                while ((bytes_read = ::read(fd, read_chunk, sizeof(read_chunk))) > 0)
-                    accumulated_buffer.insert(accumulated_buffer.end(),
-                                              read_chunk, read_chunk + bytes_read);
-                ::close(fd);
-            }
-
-            // Now that the pipe is drained the child is guaranteed to have
-            // exited (it closes the write end before/after _exit(0)).
-            int   wait_status = 0;
-            ::waitpid(entry.handle.pid, &wait_status, 0);
-
-            SweepPoint point;
-            if (accumulated_buffer.empty()) {
-                // Child crashed before writing any output.
-                point.parameters = parameter_grid[entry.grid_index];
-                point.status     = solver::SolverStatus::Failure;
-                if (WIFSIGNALED(wait_status)) {
-                    point.message =
-                        "worker killed by signal " +
-                        std::to_string(WTERMSIG(wait_status));
-                } else {
-                    point.message =
-                        "worker produced no output (exit " +
-                        std::to_string(WEXITSTATUS(wait_status)) + ")";
+            // First pass: collect, no mutation.
+            for (const auto& kv : live_workers) {
+                const int fd = kv.second.handle.read_fd;
+                if (FD_ISSET(fd, &read_set)) {
+                    ready_entries.push_back(
+                        ReadyEntry{kv.first, fd, kv.second.grid_index});
                 }
-            } else {
-                point = deserialize_sweep_point(accumulated_buffer);
             }
 
-            // Write to the original grid index — preserves order-invariant.
-            result.points[entry.grid_index] = std::move(point);
+            // Second pass: process each ready entry.
+            for (const ReadyEntry& ready : ready_entries) {
+                live_workers.erase(ready.pid);
 
-            // Immediately launch the next pending grid point to keep the pool full.
-            try_launch_next();
+                // Drain-before-waitpid: drain_and_deserialize closes the fd.
+                SweepPoint point =
+                    drain_and_deserialize(ready.read_fd,
+                                         parameter_grid[ready.grid_index]);
+
+                // Now that the pipe is drained the child is guaranteed to have
+                // exited (it closes the write end before/after _exit(0)).
+                int wait_status = 0;
+                ::waitpid(ready.pid, &wait_status, 0);
+
+                classify_crash(point, wait_status);
+
+                // Write to the original grid index — preserves order-invariant.
+                result.points[ready.grid_index] = std::move(point);
+
+                // Immediately launch the next pending grid point to keep the pool
+                // full.  Safe to emplace here: the first-pass scan is finished.
+                try_launch_next();
+            }
         }
+    } catch (...) {
+        // CRITICAL 2 cleanup: reap all still-live children before rethrowing.
+        // Best-effort: ignore individual errors so cleanup never itself throws.
+        for (auto& kv : live_workers) {
+            const int fd = kv.second.handle.read_fd;
+            // Drain to unblock the child if it is blocked in write().
+            char discard[4096];
+            while (::read(fd, discard, sizeof(discard)) > 0) { /* drain */ }
+            ::close(fd);
+            ::waitpid(kv.first, nullptr, 0);
+        }
+        live_workers.clear();
+        throw;  // rethrow the original exception
     }
 
     return result;
