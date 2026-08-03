@@ -422,6 +422,14 @@ SweepResult run_sweep_parallel(
             int max_fd = -1;
             for (const auto& kv : live_workers) {
                 const int fd = kv.second.handle.read_fd;
+                // FD_SET behaviour is undefined for fd >= FD_SETSIZE.  This
+                // cannot happen at any realistic concurrency level (FD_SETSIZE
+                // is typically 1024 and each worker uses one pipe fd), but the
+                // guard eliminates theoretical UB and gives an actionable error.
+                if (fd >= FD_SETSIZE)
+                    throw SimError(
+                        "run_sweep_parallel: pipe read_fd " + std::to_string(fd) +
+                        " >= FD_SETSIZE (" + std::to_string(FD_SETSIZE) + ")");
                 FD_SET(fd, &read_set);
                 if (fd > max_fd) max_fd = fd;
             }
@@ -472,17 +480,33 @@ SweepResult run_sweep_parallel(
 
             // Second pass: process each ready entry.
             for (const ReadyEntry& ready : ready_entries) {
+                // Erase first: once erased, this code path is solely responsible
+                // for reaping the pid — the outer catch(...) only reaps workers
+                // still IN live_workers.
                 live_workers.erase(ready.pid);
 
                 // Drain-before-waitpid: drain_and_deserialize closes the fd.
-                SweepPoint point =
-                    drain_and_deserialize(ready.read_fd,
-                                         parameter_grid[ready.grid_index]);
-
-                // Now that the pipe is drained the child is guaranteed to have
-                // exited (it closes the write end before/after _exit(0)).
+                // If drain_and_deserialize throws SimError (corrupt/truncated
+                // non-empty payload — e.g. child SIGKILL'd mid-write of a large
+                // payload), we MUST still reap the pid to avoid a zombie.
+                // We catch, waitpid the now-erased pid, then rethrow so the
+                // SimError still propagates out of run_sweep_parallel as the
+                // genuine IO error it is.  The normal (non-throwing) path also
+                // calls waitpid exactly once — no double-reap on either path.
                 int wait_status = 0;
-                ::waitpid(ready.pid, &wait_status, 0);
+                SweepPoint point;
+                try {
+                    point = drain_and_deserialize(ready.read_fd,
+                                                  parameter_grid[ready.grid_index]);
+                    // Now that the pipe is drained the child is guaranteed to have
+                    // exited (it closes the write end before/after _exit(0)).
+                    ::waitpid(ready.pid, &wait_status, 0);
+                } catch (...) {
+                    // Reap the zombie that would otherwise be orphaned because
+                    // the pid was already removed from live_workers above.
+                    ::waitpid(ready.pid, nullptr, 0);
+                    throw;  // propagate the SimError unchanged
+                }
 
                 classify_crash(point, wait_status);
 
