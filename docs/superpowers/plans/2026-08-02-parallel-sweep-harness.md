@@ -14,8 +14,8 @@
 - **Header hygiene:** no third-party solver/AD type in public headers outside impl `.cpp`.
 - **Error handling (org standard):** specific exception types (`sim::SimError`), meaningful messages, no silent catch-alls. A worker failure must surface as a classified `SweepPoint` result, never a silent drop.
 - **Naming (user preference):** verbose descriptive names; type annotations throughout.
-- **Depends on:** the **Parameter Binding plan** (`2026-08-02-parameter-binding.md`) — specifically `sim::apply_parameters`, `CompiledOcp.validator`, `nlp::NLPProblem::set_parameters`, and compile-once behavior. That plan MUST be landed first.
-- **Compile-once is mandatory (user requirement):** the sweep MUST compile the model exactly once; workers only call `apply_parameters` + `solve`. No task may re-invoke a scheme's `compile` per point.
+- **Depends on:** the **Parameter Binding plan** (`2026-08-02-parameter-binding.md`) — specifically `sim::solve_with_parameters`, `solver::Solver::solve(problem, guess, parameters)`, `CompiledOcp.validator`, and compile-once behavior. That plan MUST be landed first. **Parameters are passed at solve time** (not a separate bind call).
+- **Compile-once is mandatory (user requirement):** the sweep MUST compile the model exactly once; workers only call `sim::solve_with_parameters` (validate + solve-time inject + solve). No task may re-invoke a scheme's `compile` per point.
 - **Build/test:** configure/build under `build/`; every task ends green via `ctest`.
 
 ---
@@ -128,12 +128,12 @@ A single-process, single-threaded sweep: compile once, then for each parameter s
 - Modify: `CMakeLists.txt:177-188`
 
 **Interfaces:**
-- Consumes: `CompiledOcp` (`problem`, `layout`, `validator`), `sim::apply_parameters`, `solver::Solver`, `SweepPoint`/`SweepResult`.
+- Consumes: `CompiledOcp` (`problem`, `layout`, `validator`), `sim::solve_with_parameters`, `solver::Solver`, `SweepPoint`/`SweepResult`.
 - Produces:
   ```cpp
   /// Solve `problem` once per parameter set in `parameter_grid`, in order, on a
-  /// single thread. `problem` is compiled ONCE by the caller; each point only
-  /// binds parameters + solves. A non-Success solve is recorded as a SweepPoint
+  /// single thread. `problem` is compiled ONCE by the caller; each point passes
+  /// its parameters at solve time. A non-Success solve is recorded as a SweepPoint
   /// (not thrown). A validation failure for a point is recorded as
   /// status=Failure with the validator's explicit message — the sweep continues.
   goss::sim::SweepResult run_sweep_serial(
@@ -244,18 +244,17 @@ inline SweepResult run_sweep_serial(
         SweepPoint point;
         point.parameters = parameters;
         try {
-            apply_parameters(problem, validator, parameters);   // validate + inject
+            // Validate + solve-time inject + solve, in one call.
+            const solver::SolverResult solve_result = solve_with_parameters(
+                solver, problem, validator, initial_guess, parameters);
+            point.status = solve_result.status;
+            point.objective_value = solve_result.objective_value;
+            point.x = solve_result.x;
+            point.message = solve_result.message;
         } catch (const model::ModelError& validation_error) {
             point.status = solver::SolverStatus::Failure;
             point.message = validation_error.what();            // explicit, names param
-            result.points.push_back(std::move(point));
-            continue;
         }
-        const solver::SolverResult solve_result = solver.solve(problem, initial_guess);
-        point.status = solve_result.status;
-        point.objective_value = solve_result.objective_value;
-        point.x = solve_result.x;
-        point.message = solve_result.message;
         result.points.push_back(std::move(point));
     }
     return result;
@@ -432,13 +431,15 @@ SweepPoint solve_point_in_child(nlp::NLPProblem& problem,
         SweepPoint point;
         point.parameters = parameters;
         try {
-            apply_parameters(problem, validator, parameters);
-            const solver::SolverResult r = solver.solve(problem, initial_guess);
+            // Validate + solve-time inject + solve.
+            const solver::SolverResult r = solve_with_parameters(
+                solver, problem, validator, initial_guess, parameters);
             point.status = r.status;
             point.objective_value = r.objective_value;
             point.x = r.x;
             point.message = r.message;
         } catch (const std::exception& error) {
+            // Includes ModelError from validation (explicit, parameter-naming).
             point.status = solver::SolverStatus::Failure;
             point.message = std::string("child exception: ") + error.what();
         }
@@ -807,12 +808,12 @@ git commit -m "test(sim): end-to-end 2-D parallel sweep; document process-pool r
 
 **Requirement coverage:**
 - Many concurrent solves for sweeps (user's primary need) → Task 4 process pool + Task 6 workflow.
-- Compile-once, workers only inject parameters (user requirement) → enforced by design (caller compiles `CompiledOcp` once; workers call `apply_parameters`+`solve`), depended-on from Plan A, asserted in Tasks 2/3/4/6.
-- Explicit parameter-validation errors (user requirement) → surfaced through `apply_parameters` and recorded per-point in Tasks 2/4 (bad-point tests assert the message names the parameter).
+- Compile-once, parameters at solve time (user requirement) → enforced by design (caller compiles `CompiledOcp` once; workers call `sim::solve_with_parameters`, which passes parameters to `solve()`), depended-on from Plan A, asserted in Tasks 2/3/4/6.
+- Explicit parameter-validation errors (user requirement) → surfaced through `sim::solve_with_parameters` (validates before solving) and recorded per-point in Tasks 2/4 (bad-point tests assert the message names the parameter).
 - GPU note: intentionally out of scope here — for many small solves the earlier analysis concluded CPU process-pool throughput is the right first target; batched-GPU is a later optimization, recorded in the Task 6 note.
 
 **Placeholder scan:** No TBD/TODO. Task 4's scheduler is described with concrete requirements (order-preserving via pre-sized indices, bounded concurrency, DRY `launch_worker`/`collect_worker` split) rather than left open.
 
-**Type consistency:** `SweepPoint`/`SweepResult`, `SweepConfig`, `run_sweep_serial`, `run_sweep_parallel`, `solve_point_in_child`, `serialize_sweep_point`/`deserialize_sweep_point`, and `make_grid` signatures are consistent across Tasks 1–6. All consume the Plan A surface (`CompiledOcp.validator`, `sim::apply_parameters`, `NLPProblem::set_parameters`) with matching types.
+**Type consistency:** `SweepPoint`/`SweepResult`, `SweepConfig`, `run_sweep_serial`, `run_sweep_parallel`, `solve_point_in_child`, `serialize_sweep_point`/`deserialize_sweep_point`, and `make_grid` signatures are consistent across Tasks 1–6. All consume the Plan A surface (`CompiledOcp.validator`, `sim::solve_with_parameters`, `solver::Solver::solve(…, parameters)`) with matching types.
 
-**Dependency note:** This plan is unbuildable until the Parameter Binding plan lands — Task 2's oracle and every worker rely on `apply_parameters` + compile-once `set_parameters`. Land `2026-08-02-parameter-binding.md` first.
+**Dependency note:** This plan is unbuildable until the Parameter Binding plan lands — Task 2's oracle and every worker rely on `sim::solve_with_parameters` + solve-time parameter injection. Land `2026-08-02-parameter-binding.md` first.

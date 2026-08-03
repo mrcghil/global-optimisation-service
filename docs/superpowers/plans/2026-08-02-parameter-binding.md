@@ -4,7 +4,9 @@
 
 **Goal:** Let a model declare named *parameters* (values that vary per run — arrival rate, a cost weight, an initial state) so the AD tape is recorded and JIT-compiled ONCE, and each subsequent solve only injects a fresh parameter vector — no recompile.
 
-**Architecture:** Add a parameter-binding capability at the AD backend (`ad/`), expose it through `NLPProblem` (`nlp/`), thread an optional parameter vector into the transcription packed functors (`transcription/`), let `Model` declare parameters and produce a validation artifact (`model/`), and add a `sim/` helper that validates-then-binds a parameter set with explicit error messages. Upper layers depend only on a stable `set_parameters`/validation abstraction; the concrete binding mechanism (CppAD dynamic parameters, with a pinned-variable fallback) is hidden inside `ad/`.
+**Architecture:** Add a parameter-binding capability at the AD backend (`ad/`), expose it through `NLPProblem` (`nlp/`), thread an optional parameter vector into the transcription packed functors (`transcription/`), let `Model` declare parameters and produce a validation artifact (`model/`). Parameters are passed **at solve time**: the `Solver::solve` interface gains a `parameters` argument, and each adapter injects the parameter vector into the problem ONCE at the top of `solve()` (parameters are constant across the solver's x-iterations). A `sim/` helper validates-then-solves with explicit error messages. Upper layers depend only on a stable `set_parameters`/validation abstraction; the concrete binding mechanism (CppAD dynamic parameters, with a pinned-variable fallback) is hidden inside `ad/`.
+
+**Why solve-time (not a separate stateful bind):** both `IpoptSolver::solve` and `NloptSolver::solve` already take `const nlp::NLPProblem&` and call `problem.eval_*(x)` inside their callbacks (`src/solver/ipopt_solver.cpp:133`, `src/solver/nlopt_solver.cpp:52`). Because `NLPProblem` holds a `std::unique_ptr<ad::ADBackend>`, a *const* `NLPProblem` still yields a non-const `ADBackend&`, so `set_parameters` can be a `const` method and the solver can inject through its `const&` without any signature or const-correctness fight. Passing parameters as a solve argument makes the parameter set part of "what to solve," which is exactly the per-run varying quantity a sweep changes.
 
 **Tech Stack:** C++17, CppAD + CppADCodeGen (JIT), IPOPT/NLopt, GoogleTest, CMake.
 
@@ -305,7 +307,9 @@ git commit -m "feat(ad): parameterized backend with compile-once parameter injec
 
 ### Task 3: `nlp/` — parameter passthrough on NLPProblem
 
-`NLPProblem` forwards parameter queries/injection to its backend. Eval methods are unchanged — parameters are injected out-of-band before a solve, and stay fixed across the solver's x-iterations.
+`NLPProblem` forwards parameter queries/injection to its backend. Eval methods are unchanged — parameters are injected once by the solver at the top of `solve()`, and stay fixed across the solver's x-iterations.
+
+**`set_parameters` is a `const` method.** `NLPProblem` holds `std::unique_ptr<ad::ADBackend> backend_`; dereferencing the `unique_ptr` through a const `NLPProblem` yields a non-const `ADBackend&`, so forwarding to the backend's non-const `set_parameters` compiles from a const method. This is what lets the solver — which holds `const nlp::NLPProblem&` (`ipopt_solver.cpp:280`, `nlopt_solver.cpp:203`) — inject parameters without any interface change to how it stores the problem.
 
 **Files:**
 - Modify: `include/goss/nlp/nlp_problem.hpp:29-59`
@@ -317,7 +321,7 @@ git commit -m "feat(ad): parameterized backend with compile-once parameter injec
 - Consumes: `ad::ADBackend::num_parameters()`, `ad::ADBackend::set_parameters()` (Task 2).
 - Produces:
   - `std::size_t nlp::NLPProblem::num_parameters() const` — forwards to backend.
-  - `void nlp::NLPProblem::set_parameters(const std::vector<double>& parameter_values)` — forwards to backend (propagates `ADError`).
+  - `void nlp::NLPProblem::set_parameters(const std::vector<double>& parameter_values) const` — forwards to backend (propagates `ADError`). **Const** so a solver holding `const NLPProblem&` can inject.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -351,6 +355,17 @@ TEST(NlpParameters, ForwardsCountAndInjectionToBackend) {
     problem.set_parameters({10.0});
     EXPECT_NEAR(problem.eval_objective({3.0}), 10.0 * 9.0, 1e-12);  // 90
 }
+
+TEST(NlpParameters, SetParametersCallableThroughConstReference) {
+    auto backend = std::make_unique<goss::ad::CppADCGBackend>(
+        ParamObjOnly{}, 1, 1, std::vector<double>{1.0}, "nlp_param_const");
+    goss::nlp::NLPProblem problem(std::move(backend),
+        {-1e19}, {1e19}, {}, {});
+    // A const ref must be able to inject — this is what the solver relies on.
+    const goss::nlp::NLPProblem& const_problem = problem;
+    const_problem.set_parameters({7.0});
+    EXPECT_NEAR(const_problem.eval_objective({2.0}), 7.0 * 4.0, 1e-12);  // 28
+}
 ```
 
 - [ ] **Step 2: Wire the test TU; run to verify FAIL**
@@ -369,8 +384,10 @@ In `nlp_problem.hpp`, after `num_constraints()` (`nlp_problem.hpp:30`):
     std::size_t num_parameters() const;
 
     /// Injects the parameter vector for subsequent evaluations. Forwards to the
-    /// backend; propagates ADError on size mismatch.
-    void set_parameters(const std::vector<double>& parameter_values);
+    /// backend; propagates ADError on size mismatch. CONST: the backend is owned
+    /// via unique_ptr, so a const NLPProblem still yields a non-const ADBackend&
+    /// — this lets a solver holding `const NLPProblem&` inject at solve time.
+    void set_parameters(const std::vector<double>& parameter_values) const;
 ```
 
 - [ ] **Step 4: Implement forwarding in the .cpp**
@@ -382,8 +399,8 @@ std::size_t NLPProblem::num_parameters() const {
     return backend_->num_parameters();
 }
 
-void NLPProblem::set_parameters(const std::vector<double>& parameter_values) {
-    backend_->set_parameters(parameter_values);
+void NLPProblem::set_parameters(const std::vector<double>& parameter_values) const {
+    backend_->set_parameters(parameter_values);   // non-const ADBackend& through unique_ptr
 }
 ```
 
@@ -586,24 +603,17 @@ Add `std::vector<ParameterSpec> parameter_specs_;` to the private section. Exten
 
 - [ ] **Step 5: Carry parameter metadata into `OcpProblem`**
 
-In `ocp_problem.hpp`, add to the struct (`ocp_problem.hpp:22-36`):
+In `ocp_problem.hpp`, add to the struct (`ocp_problem.hpp:22-36`) the full metadata set (add `#include <string>`). This is the complete set of fields Task 5 (transcription) and Task 6 (validator) both consume, so add them all now to avoid a second edit:
 
 ```cpp
     std::size_t num_parameters = 0;
-    std::vector<double> parameter_defaults;   // size == num_parameters
+    std::vector<std::string> parameter_names;    // size == num_parameters
+    std::vector<double> parameter_defaults;      // size == num_parameters
+    std::vector<double> parameter_lower;         // size == num_parameters
+    std::vector<double> parameter_upper;         // size == num_parameters
 ```
 
-In `Model::build` (`model.hpp:158-172`), append to the aggregate initializer:
-
-```cpp
-        /* num_parameters       */ parameter_specs_.size(),
-        /* parameter_defaults   */ [this]{
-            std::vector<double> defaults;
-            defaults.reserve(parameter_specs_.size());
-            for (const ParameterSpec& spec : parameter_specs_) defaults.push_back(spec.default_value);
-            return defaults;
-        }()
-```
+In `Model::build` (`model.hpp:158-172`), append to the aggregate initializer, building each vector from `parameter_specs_` (name, default_value, lower_bound, upper_bound respectively). Use a small local loop before the `return` to fill four `std::vector`s and move them into the initializer, rather than four inline lambdas.
 
 - [ ] **Step 6: Run tests to verify PASS**
 
@@ -837,28 +847,48 @@ git commit -m "feat(transcription): thread optional parameters through packed fu
 
 ---
 
-### Task 6: `sim/` — validate-then-bind helper + CompiledOcp validator handoff
+### Task 6: `solver/` — parameters passed at solve time + CompiledOcp validator
 
-Bundle the `ParameterValidator` with the compiled problem so a caller has one place to validate a parameter set (explicit errors) before injecting it. Provide a `sim::apply_parameters` helper that validates then sets — the single entry point the sweep harness (Plan B) will call.
+Thread the parameter vector through the `Solver` interface so parameters are supplied **as an argument to `solve()`**, and each adapter injects them into the problem ONCE at the top of `solve()` (before any evaluation callback runs). Also bundle the `ParameterValidator` with `CompiledOcp` so callers have a co-located, self-contained artifact.
 
 **Files:**
-- Modify: `include/goss/transcription/transcription.hpp:22-25` (add optional validator to `CompiledOcp`)
-- Create: `include/goss/sim/parameters.hpp` (`apply_parameters`)
+- Modify: `include/goss/solver/solver.hpp:21-22` (add `parameters` arg to the pure virtual)
+- Modify: `include/goss/solver/ipopt_solver.hpp:35-36`, `include/goss/solver/nlopt_solver.hpp:34-35` (matching override signatures)
+- Modify: `src/solver/ipopt_solver.cpp:280-290` (inject at top of solve)
+- Modify: `src/solver/nlopt_solver.cpp:203-211` (inject at top of solve)
+- Modify: `include/goss/transcription/transcription.hpp:22-25` (add validator to `CompiledOcp`)
+- Modify: `include/goss/transcription/ocp_problem.hpp` (carry parameter names + bounds — superset of Task 4)
 - Modify: each scheme `compile` to attach the validator built from `ocp` metadata
-- Test: `tests/sim/test_parameters.cpp`
-- Modify: `CMakeLists.txt:177-188`
+- Modify: `include/goss/model/model.hpp` (`Model::build` populates the new OcpProblem fields)
+- Test: `tests/solver/test_solver_parameters.cpp`
+- Modify: `CMakeLists.txt:108-119` (add TU to `goss_solver_tests`)
+
+**Interface change (the crux of this revision):**
+```cpp
+// solver.hpp — the pure virtual gains a defaulted parameters argument.
+virtual SolverResult solve(const nlp::NLPProblem& problem,
+                           const std::vector<double>& initial_guess,
+                           const std::vector<double>& parameters = {}) = 0;
+```
+Each adapter, at the very top of `solve()` (before configuring IPOPT / building NLopt callbacks), injects:
+```cpp
+if (!parameters.empty() || problem.num_parameters() > 0)
+    problem.set_parameters(parameters);   // const method; problem is const& — OK (Task 3)
+```
+`set_parameters` propagates `ADError` on a size mismatch. Because the injection happens once and parameters are constant across the solver's x-iterations, every subsequent `eval_*` callback (`ipopt_solver.cpp:133`, `nlopt_solver.cpp:52`) sees the injected values with no per-callback plumbing.
+
+**Note on defaulted virtual argument:** the base declares `= {}`; overrides in the adapters must NOT re-specify the default (a default on a virtual is resolved from the static type, so keeping it only on the base avoids ambiguity). Every existing call site `solve(problem, guess)` keeps compiling unchanged and injects nothing — additive.
 
 **Interfaces:**
-- Consumes: `nlp::NLPProblem::set_parameters` (Task 3), `model::ParameterValidator` (Task 4).
+- Consumes: `nlp::NLPProblem::set_parameters` / `num_parameters` (Task 3).
 - Produces:
-  - `CompiledOcp` gains `model::ParameterValidator validator;` (constructed from `ocp.num_parameters` + `ocp.parameter_defaults`; when zero params, an empty validator).
-  - `void sim::apply_parameters(nlp::NLPProblem& problem, const model::ParameterValidator& validator, const std::vector<double>& values)` — calls `validator.validate(values)` then `problem.set_parameters(values)`; propagates `ModelError` (validation) or `ADError` (injection).
-
-**Design note:** `CompiledOcp` currently holds only `problem` + `layout` (`transcription.hpp:22-25`). Adding the validator keeps parameter metadata co-located with the compiled model, so a sweep worker holds one self-contained object. Since `ParameterValidator` needs names for good messages and `OcpProblem` currently carries only defaults, extend `OcpProblem` (Task 4) minimally OR pass names through: to keep messages naming parameters, carry `std::vector<std::string> parameter_names` in `OcpProblem` too (add in this task if not already present) and build `ParameterSpec`s from names+defaults+bounds. If bounds aren't threaded into `OcpProblem`, default them to `[-kInf, kInf]` and rely on the model-level validator obtained via `Model::parameter_validator()` for bound checks. **Simplest correct choice:** the authoritative validator is `Model::parameter_validator()`; `CompiledOcp.validator` is a copy of it. Have each scheme's `compile` accept the validator — but `compile` takes `OcpProblem`, not `Model`. Therefore thread `parameter_names` + `parameter_lower`/`parameter_upper` into `OcpProblem` in Task 4's Step 5 (extend the added fields to include names and bounds), and build the validator inside `compile` from those. Update Task 4 Step 5 accordingly if implementing tasks strictly in order.
+  - `Solver::solve(problem, initial_guess, parameters = {})` on the base and both adapters.
+  - `CompiledOcp` gains `model::ParameterValidator validator;`.
+  - `OcpProblem` gains `num_parameters`, `parameter_names`, `parameter_defaults`, `parameter_lower`, `parameter_upper`.
 
 - [ ] **Step 1: Extend OcpProblem parameter metadata (names + bounds)**
 
-Ensure `ocp_problem.hpp` carries (superset of Task 4's fields):
+In `ocp_problem.hpp`, replace the two fields added in Task 4 Step 5 with the full set (add `#include <string>`):
 
 ```cpp
     std::size_t num_parameters = 0;
@@ -868,62 +898,114 @@ Ensure `ocp_problem.hpp` carries (superset of Task 4's fields):
     std::vector<double> parameter_upper;         // size == num_parameters
 ```
 
-Update `Model::build` to populate all four from `parameter_specs_`. (Add `#include <string>` to `ocp_problem.hpp`.)
+Update `Model::build` (`model.hpp:158-172`) to populate all five fields from `parameter_specs_` (names/defaults/lower/upper pulled per spec).
 
-- [ ] **Step 2: Write the failing sim test**
+- [ ] **Step 2: Write the failing solver test (parameters at solve time)**
 
 ```cpp
-// tests/sim/test_parameters.cpp
+// tests/solver/test_solver_parameters.cpp
 #include <gtest/gtest.h>
-#include <string>
+#include <vector>
 #include "goss/model/model.hpp"
-#include "goss/transcription/trapezoidal.hpp"
-#include "goss/sim/parameters.hpp"
-#include "goss/model/errors.hpp"
+#include "goss/transcription/hermite_simpson.hpp"
+#include "goss/solver/ipopt_solver.hpp"
+#include "goss/sim/initial_guess.hpp"
 
-TEST(SimParameters, ValidateThenBindAcceptsInRange) {
-    goss::model::Model model;
-    auto x = model.add_state("x");
-    model.add_parameter("arrival_rate", 1.0, 0.0, 10.0);
-    model.set_initial_state(x, 0.0);
-    model.set_mesh(0.0, 1.0, 4);
+namespace {
+goss::transcription::CompiledOcp build_param_queue(goss::model::Model& model, const char* name) {
+    auto q    = model.add_state("queue_length");
+    auto rate = model.add_control("service_rate");
+    model.add_parameter("arrival_rate", 2.0, 0.0, 10.0);
+    model.set_state_bounds(q, 0.0, 1e19);
+    model.set_control_bounds(rate, 0.0, 5.0);
+    model.set_initial_state(q, 10.0);
+    model.set_mesh(0.0, 5.0, 30);
     auto ocp = model.build(
-        [](const auto& xx, const auto&, const auto& p, auto){ using T=std::decay_t<decltype(xx[0])>; return std::vector<T>{p[0]-xx[0]}; },
-        [](const auto&, const auto&, const auto&, auto t){ using T=std::decay_t<decltype(t)>; return T(0); });
-    auto compiled = goss::transcription::Trapezoidal::compile(ocp, "sim_param_ok");
+        [](const auto& x, const auto& u, const auto& p, auto){
+            using T = std::decay_t<decltype(x[0])>; return std::vector<T>{ p[0] - u[0] }; },
+        [](const auto& x, const auto& u, const auto&, auto){
+            using T = std::decay_t<decltype(x[0])>; return x[0] + T(0.1)*u[0]*u[0]; });
+    return goss::transcription::HermiteSimpson::compile(ocp, name);
+}
+}  // namespace
 
-    ASSERT_EQ(compiled.validator.size(), 1u);
-    EXPECT_NO_THROW(goss::sim::apply_parameters(*compiled.problem, compiled.validator, {3.0}));
+TEST(SolverParameters, ParametersPassedAtSolveTimeChangeTheOptimum) {
+    goss::model::Model model;
+    auto compiled = build_param_queue(model, "solver_param_queue");
+    const auto z0 = goss::sim::linear_guess(model, compiled.layout);
+    goss::solver::IpoptSolver solver;
+
+    // Parameters supplied AS A SOLVE ARGUMENT — no separate bind call.
+    auto low  = solver.solve(*compiled.problem, z0, /*parameters=*/{1.0});
+    ASSERT_EQ(low.status, goss::solver::SolverStatus::Success);
+    auto high = solver.solve(*compiled.problem, z0, /*parameters=*/{4.0});
+    ASSERT_EQ(high.status, goss::solver::SolverStatus::Success);
+
+    EXPECT_GT(high.objective_value, low.objective_value);
 }
 
-TEST(SimParameters, ValidateThenBindRejectsOutOfRangeBeforeTouchingSolver) {
+TEST(SolverParameters, WrongParameterCountThrows) {
     goss::model::Model model;
-    auto x = model.add_state("x");
-    model.add_parameter("arrival_rate", 1.0, 0.0, 10.0);
-    model.set_initial_state(x, 0.0);
-    model.set_mesh(0.0, 1.0, 4);
-    auto ocp = model.build(
-        [](const auto& xx, const auto&, const auto& p, auto){ using T=std::decay_t<decltype(xx[0])>; return std::vector<T>{p[0]-xx[0]}; },
-        [](const auto&, const auto&, const auto&, auto t){ using T=std::decay_t<decltype(t)>; return T(0); });
-    auto compiled = goss::transcription::Trapezoidal::compile(ocp, "sim_param_bad");
-
-    try {
-        goss::sim::apply_parameters(*compiled.problem, compiled.validator, {50.0});
-        FAIL() << "expected ModelError";
-    } catch (const goss::model::ModelError& error) {
-        EXPECT_NE(std::string(error.what()).find("arrival_rate"), std::string::npos);
-    }
+    auto compiled = build_param_queue(model, "solver_param_badsz");
+    const auto z0 = goss::sim::linear_guess(model, compiled.layout);
+    goss::solver::IpoptSolver solver;
+    EXPECT_THROW(solver.solve(*compiled.problem, z0, {1.0, 2.0}), goss::ad::ADError);
 }
 ```
 
 - [ ] **Step 3: Wire test TU; run to verify FAIL**
 
-Add `tests/sim/test_parameters.cpp` to `goss_sim_tests` (`CMakeLists.txt:177-182`).
+Add `tests/solver/test_solver_parameters.cpp` to `goss_solver_tests` (`CMakeLists.txt:108-113`). Note the solver test target already links model/transcription/sim transitively via the include dirs; add `goss_transcription` + `goss_model` if the link fails.
 
-Run: `cmake --build build --target goss_sim_tests`
-Expected: FAIL — `CompiledOcp.validator` and `sim/parameters.hpp` missing.
+Run: `cmake --build build --target goss_solver_tests`
+Expected: FAIL — `solve` has no 3-argument overload.
 
-- [ ] **Step 4: Add validator to CompiledOcp**
+- [ ] **Step 4: Add the `parameters` argument to the Solver interface**
+
+In `solver.hpp` (`solver.hpp:21-22`):
+
+```cpp
+    /// Solve the problem from initial_guess. `parameters` (empty by default) is
+    /// injected into the problem's AD backend ONCE before the solve begins; it
+    /// stays constant across the solver's x-iterations. Solve OUTCOMES (including
+    /// non-convergence) are reported via SolverResult.status; only setup/usage
+    /// errors throw (SolverError / ADError on a parameter size mismatch).
+    virtual SolverResult solve(const nlp::NLPProblem& problem,
+                               const std::vector<double>& initial_guess,
+                               const std::vector<double>& parameters = {}) = 0;
+```
+
+In `ipopt_solver.hpp:35-36` and `nlopt_solver.hpp:34-35`, update the override declarations to match (WITHOUT the `= {}` default):
+
+```cpp
+    SolverResult solve(const nlp::NLPProblem& problem,
+                       const std::vector<double>& initial_guess,
+                       const std::vector<double>& parameters) override;
+```
+
+- [ ] **Step 5: Inject parameters at the top of each adapter's solve()**
+
+In `src/solver/ipopt_solver.cpp`, change the signature to match and add injection right after the existing `initial_guess` size check (`ipopt_solver.cpp:284-290`):
+
+```cpp
+SolverResult IpoptSolver::solve(const nlp::NLPProblem& problem,
+                                const std::vector<double>& initial_guess,
+                                const std::vector<double>& parameters) {
+    if (initial_guess.size() != problem.num_variables()) { /* ... unchanged ... */ }
+
+    // Inject solve-time parameters once; constant across all eval callbacks.
+    // set_parameters is const, problem is const& — OK (backend via unique_ptr).
+    // Propagates ADError on a size mismatch (setup error, not a solve outcome).
+    if (!parameters.empty() || problem.num_parameters() > 0)
+        problem.set_parameters(parameters);
+
+    // ... rest unchanged ...
+}
+```
+
+Apply the identical change to `src/solver/nlopt_solver.cpp` after its `initial_guess` size check (`nlopt_solver.cpp:205-211`). Add `#include "goss/ad/errors.hpp"` if `ADError` isn't already visible (it propagates through, so no catch needed — but the include keeps intent clear).
+
+- [ ] **Step 6: Add validator to CompiledOcp + build it in each scheme compile**
 
 In `transcription.hpp`, include `"goss/model/parameter.hpp"` and extend:
 
@@ -935,11 +1017,9 @@ struct CompiledOcp {
 };
 ```
 
-(Guard against an include cycle: `parameter.hpp` depends only on `model/errors.hpp`, not on transcription — safe.)
+(`parameter.hpp` depends only on `model/errors.hpp`, so no include cycle with transcription.)
 
-- [ ] **Step 5: Build the validator inside each scheme `compile`**
-
-In each scheme's `compile`, after building `problem`, construct the validator from the `OcpProblem` parameter metadata and return it:
+In each scheme's `compile`, after building `problem`, construct and return the validator:
 
 ```cpp
     std::vector<model::ParameterSpec> specs;
@@ -951,7 +1031,106 @@ In each scheme's `compile`, after building `problem`, construct the validator fr
     return CompiledOcp{std::move(problem), layout, model::ParameterValidator(std::move(specs))};
 ```
 
-- [ ] **Step 6: Implement `sim/parameters.hpp`**
+- [ ] **Step 7: Run tests to verify PASS**
+
+Run: `cd build && ctest -R SolverParameters --output-on-failure`
+Expected: PASS.
+
+- [ ] **Step 8: Full solver-suite regression (defaulted arg keeps old callers green)**
+
+Run: `cmake --build build && cd build && ctest -R "goss_solver_tests|goss_transcription_tests|goss_accuracy_tests" --output-on-failure`
+Expected: PASS — existing 2-argument `solve(problem, guess)` calls still compile and inject nothing.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add include/goss/solver/solver.hpp include/goss/solver/ipopt_solver.hpp include/goss/solver/nlopt_solver.hpp src/solver/ipopt_solver.cpp src/solver/nlopt_solver.cpp include/goss/transcription/transcription.hpp include/goss/transcription/ocp_problem.hpp include/goss/model/model.hpp tests/solver/test_solver_parameters.cpp CMakeLists.txt
+git commit -m "feat(solver): pass parameters at solve time; inject once into the AD backend"
+```
+
+---
+
+### Task 7: `sim/` — validate-then-solve helper
+
+A single entry point that validates a parameter set (explicit, parameter-naming errors — the user's requirement) BEFORE handing it to the solver at solve time. This is what the sweep harness (Plan B) calls per point.
+
+**Files:**
+- Create: `include/goss/sim/parameters.hpp` (`solve_with_parameters`)
+- Test: `tests/sim/test_parameters.cpp`
+- Modify: `CMakeLists.txt:177-188`
+
+**Interfaces:**
+- Consumes: `model::ParameterValidator::validate` (Task 4), `solver::Solver::solve(problem, guess, parameters)` (Task 6).
+- Produces:
+  - `solver::SolverResult sim::solve_with_parameters(solver::Solver& solver, const nlp::NLPProblem& problem, const model::ParameterValidator& validator, const std::vector<double>& initial_guess, const std::vector<double>& parameters)` — validates then solves; propagates `ModelError` on invalid parameters (before any solver work).
+
+- [ ] **Step 1: Write the failing sim test**
+
+```cpp
+// tests/sim/test_parameters.cpp
+#include <gtest/gtest.h>
+#include <string>
+#include "goss/model/model.hpp"
+#include "goss/transcription/hermite_simpson.hpp"
+#include "goss/solver/ipopt_solver.hpp"
+#include "goss/sim/initial_guess.hpp"
+#include "goss/sim/parameters.hpp"
+#include "goss/model/errors.hpp"
+
+namespace {
+goss::transcription::CompiledOcp build_q(goss::model::Model& model, const char* name) {
+    auto q    = model.add_state("queue_length");
+    auto rate = model.add_control("service_rate");
+    model.add_parameter("arrival_rate", 2.0, 0.0, 10.0);
+    model.set_state_bounds(q, 0.0, 1e19);
+    model.set_control_bounds(rate, 0.0, 5.0);
+    model.set_initial_state(q, 10.0);
+    model.set_mesh(0.0, 5.0, 20);
+    auto ocp = model.build(
+        [](const auto& x, const auto& u, const auto& p, auto){
+            using T = std::decay_t<decltype(x[0])>; return std::vector<T>{ p[0]-u[0] }; },
+        [](const auto& x, const auto& u, const auto&, auto){
+            using T = std::decay_t<decltype(x[0])>; return x[0] + T(0.1)*u[0]*u[0]; });
+    return goss::transcription::HermiteSimpson::compile(ocp, name);
+}
+}  // namespace
+
+TEST(SimParameters, ValidateThenSolveAcceptsInRange) {
+    goss::model::Model model;
+    auto compiled = build_q(model, "sim_param_ok");
+    const auto z0 = goss::sim::linear_guess(model, compiled.layout);
+    goss::solver::IpoptSolver solver;
+
+    ASSERT_EQ(compiled.validator.size(), 1u);
+    auto result = goss::sim::solve_with_parameters(
+        solver, *compiled.problem, compiled.validator, z0, {3.0});
+    EXPECT_EQ(result.status, goss::solver::SolverStatus::Success);
+}
+
+TEST(SimParameters, ValidateThenSolveRejectsOutOfRangeBeforeTouchingSolver) {
+    goss::model::Model model;
+    auto compiled = build_q(model, "sim_param_bad");
+    const auto z0 = goss::sim::linear_guess(model, compiled.layout);
+    goss::solver::IpoptSolver solver;
+
+    try {
+        goss::sim::solve_with_parameters(
+            solver, *compiled.problem, compiled.validator, z0, {50.0});
+        FAIL() << "expected ModelError";
+    } catch (const goss::model::ModelError& error) {
+        EXPECT_NE(std::string(error.what()).find("arrival_rate"), std::string::npos);
+    }
+}
+```
+
+- [ ] **Step 2: Wire test TU; run to verify FAIL**
+
+Add `tests/sim/test_parameters.cpp` to `goss_sim_tests` (`CMakeLists.txt:177-182`).
+
+Run: `cmake --build build --target goss_sim_tests`
+Expected: FAIL — `sim/parameters.hpp` / `solve_with_parameters` missing.
+
+- [ ] **Step 3: Implement `sim/parameters.hpp`**
 
 ```cpp
 // include/goss/sim/parameters.hpp
@@ -959,47 +1138,52 @@ In each scheme's `compile`, after building `problem`, construct the validator fr
 #include <vector>
 #include "goss/model/parameter.hpp"
 #include "goss/nlp/nlp_problem.hpp"
+#include "goss/solver/solver.hpp"
+#include "goss/solver/solver_result.hpp"
 
 namespace goss::sim {
 
-/// Validates a proposed parameter set against the compiled problem's validator
-/// (throwing ModelError with an explicit, parameter-naming message on failure),
-/// then injects it into the NLP (may throw ADError on a backend size mismatch).
-/// This is the single entry point a sweep runner uses per parameter point.
-inline void apply_parameters(nlp::NLPProblem& problem,
-                             const model::ParameterValidator& validator,
-                             const std::vector<double>& values) {
-    validator.validate(values);       // explicit errors, before any solver work
-    problem.set_parameters(values);   // compile-once injection
+/// Validates `parameters` against the compiled problem's validator (throwing
+/// ModelError with an explicit, parameter-naming message on failure), THEN
+/// solves with the parameters supplied at solve time. Validation runs before any
+/// solver work, so an invalid point never touches the (expensive) solver.
+inline solver::SolverResult solve_with_parameters(
+        solver::Solver& solver,
+        const nlp::NLPProblem& problem,
+        const model::ParameterValidator& validator,
+        const std::vector<double>& initial_guess,
+        const std::vector<double>& parameters) {
+    validator.validate(parameters);                       // explicit errors first
+    return solver.solve(problem, initial_guess, parameters);  // solve-time injection
 }
 
 }  // namespace goss::sim
 ```
 
-- [ ] **Step 7: Run tests to verify PASS**
+- [ ] **Step 4: Run tests to verify PASS**
 
 Run: `cd build && ctest -R SimParameters --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add include/goss/transcription/transcription.hpp include/goss/transcription/ocp_problem.hpp include/goss/model/model.hpp include/goss/sim/parameters.hpp include/goss/transcription/trapezoidal.hpp include/goss/transcription/hermite_simpson.hpp include/goss/transcription/legendre_gauss_lobatto.hpp tests/sim/test_parameters.cpp CMakeLists.txt
-git commit -m "feat(sim): bundle ParameterValidator with CompiledOcp; add validate-then-bind helper"
+git add include/goss/sim/parameters.hpp tests/sim/test_parameters.cpp CMakeLists.txt
+git commit -m "feat(sim): validate-then-solve helper (explicit errors, solve-time parameters)"
 ```
 
 ---
 
-### Task 7: End-to-end — parametric queue solved twice, compiled once
+### Task 8: End-to-end — parametric queue solved twice, compiled once
 
-The spec's motivating example (the queue) becomes a permanent parametric fixture: declare `arrival_rate` as a parameter, compile once, solve at two arrival rates, and assert (a) both solves succeed, (b) the optima differ, (c) only ONE compilation occurred.
+The spec's motivating example (the queue) becomes a permanent parametric fixture: declare `arrival_rate` as a parameter, compile once, solve at two arrival rates passing parameters at solve time, and assert (a) both solves succeed, (b) the optima differ, (c) only ONE compilation occurred.
 
 **Files:**
 - Test: `tests/accuracy/test_parametric_queue.cpp`
 - Modify: `CMakeLists.txt:215-219` (add to `goss_accuracy_tests`)
 
 **Interfaces:**
-- Consumes: everything above — `Model::add_parameter`, `Trapezoidal::compile`, `sim::apply_parameters`, `IpoptSolver::solve`, `sim::linear_guess`.
+- Consumes: everything above — `Model::add_parameter`, `HermiteSimpson::compile`, `sim::solve_with_parameters`, `IpoptSolver::solve(…, parameters)`, `sim::linear_guess`.
 
 - [ ] **Step 1: Write the end-to-end test**
 
@@ -1042,12 +1226,13 @@ TEST(ParametricQueue, CompileOnceSolveManyAcrossArrivalRates) {
 
     goss::solver::IpoptSolver solver;
 
-    goss::sim::apply_parameters(*compiled.problem, compiled.validator, {1.0});
-    auto low = solver.solve(*compiled.problem, z0);
+    // Parameters at solve time via the validate-then-solve helper.
+    auto low = goss::sim::solve_with_parameters(
+        solver, *compiled.problem, compiled.validator, z0, {1.0});
     ASSERT_EQ(low.status, goss::solver::SolverStatus::Success);
 
-    goss::sim::apply_parameters(*compiled.problem, compiled.validator, {4.0});
-    auto high = solver.solve(*compiled.problem, z0);
+    auto high = goss::sim::solve_with_parameters(
+        solver, *compiled.problem, compiled.validator, z0, {4.0});
     ASSERT_EQ(high.status, goss::solver::SolverStatus::Success);
 
     // Higher arrival rate => costlier optimum (queue harder to drain).
@@ -1055,23 +1240,16 @@ TEST(ParametricQueue, CompileOnceSolveManyAcrossArrivalRates) {
 }
 ```
 
-- [ ] **Step 2: Wire test TU; run to verify FAIL then PASS**
+- [ ] **Step 2: Wire test TU; run to verify PASS**
 
 Add `tests/accuracy/test_parametric_queue.cpp` to `goss_accuracy_tests` (`CMakeLists.txt:215-219`).
 
 Run: `cmake --build build --target goss_accuracy_tests && cd build && ctest -R ParametricQueue --output-on-failure`
 Expected: PASS (all prior tasks in place).
 
-- [ ] **Step 3: Prove compile-once with a JIT-artifact count assertion (optional hardening)**
+- [ ] **Step 3: Prove compile-once (optional hardening)**
 
-The generated `.so` for `parametric_queue` should appear exactly once under `build/`. Add a check that a second `apply_parameters`+`solve` did not create a new `parametric_queue*.so`:
-
-```cpp
-// (In the same test, before/after the two solves, or as a sibling test using
-//  std::filesystem to count files in the build dir matching "parametric_queue".)
-```
-
-If filesystem inspection is too brittle across environments, rely instead on wall-clock: assert the second solve's setup path spent no time compiling by timing `apply_parameters` (must be sub-millisecond). Keep whichever is stable in CI; document the choice inline.
+Prove the second solve did NOT recompile. Preferred: time the second `solve_with_parameters` call and assert it is far below a fresh JIT-compile time (JIT is seconds; a warm solve is milliseconds-to-sub-second). Alternatively count `parametric_queue*.so` artifacts under `build/` with `std::filesystem` and assert exactly one. Keep whichever is stable in CI; document the choice inline.
 
 Run: `cd build && ctest -R ParametricQueue --output-on-failure`
 Expected: PASS.
@@ -1080,7 +1258,7 @@ Expected: PASS.
 
 ```bash
 git add tests/accuracy/test_parametric_queue.cpp CMakeLists.txt
-git commit -m "test(accuracy): parametric queue compiles once, solves across arrival rates"
+git commit -m "test(accuracy): parametric queue compiles once, solves across arrival rates at solve time"
 ```
 
 ---
@@ -1089,13 +1267,16 @@ git commit -m "test(accuracy): parametric queue compiles once, solves across arr
 
 **Spec/requirement coverage:**
 - Compile-once parameter injection → Tasks 1–3 (mechanism, backend, NLP).
+- **Parameters passed at solve time (this revision)** → Task 6 (`Solver::solve(problem, guess, parameters)`; adapters inject once at the top of `solve()`).
 - Full DSL threading (user's chosen scope) → Tasks 4–5 (Model declares parameters; schemes thread them).
-- Parameter-validation artifact with explicit messages (user's explicit requirement) → Task 4 (`ParameterValidator`) + Task 6 (`CompiledOcp.validator`, `sim::apply_parameters`).
-- "Each process picks up new params, no recompile" (user note) → guaranteed by Tasks 2–3 (`set_parameters` on a compiled model) and demonstrated in Task 7; consumed by Plan B.
-- Additive/no-rewrite invariant → Task 5 arity dispatch keeps all existing 3-arg models green (verified in Task 5 Step 7).
+- Parameter-validation artifact with explicit messages (user's explicit requirement) → Task 4 (`ParameterValidator`) + Task 6 (`CompiledOcp.validator`) + Task 7 (`sim::solve_with_parameters` validates before solving).
+- "Each run picks up new params, no recompile" (user note) → guaranteed by Tasks 2–3 + solve-time injection in Task 6; demonstrated in Task 8; consumed by Plan B.
+- Additive/no-rewrite invariant → Task 5 arity dispatch keeps existing 3-arg models green; Task 6's defaulted `parameters = {}` keeps every existing `solve(problem, guess)` call site compiling and injecting nothing (verified in Task 6 Step 8).
 
 **Placeholder scan:** No TBD/TODO. The one genuine unknown (CppADCodeGen dynamic-parameter API) is isolated in Task 1 as a spike with a concrete fallback, not left as a placeholder downstream.
 
-**Type consistency:** `set_parameters(const std::vector<double>&)`, `num_parameters()`, `ParameterValidator::validate/size/defaults`, `CompiledOcp.validator`, and `sim::apply_parameters` signatures are used identically across Tasks 2–7. `OcpProblem` parameter fields (`num_parameters`, `parameter_names`, `parameter_defaults`, `parameter_lower`, `parameter_upper`) are introduced in Task 4/6 and consumed consistently in Task 5/6.
+**Type consistency:** `set_parameters(const std::vector<double>&) const`, `num_parameters()`, `ParameterValidator::validate/size/defaults`, `CompiledOcp.validator`, `Solver::solve(…, parameters)`, and `sim::solve_with_parameters` signatures are used identically across Tasks 2–8. `OcpProblem` parameter fields (`num_parameters`, `parameter_names`, `parameter_defaults`, `parameter_lower`, `parameter_upper`) are introduced in Task 4 Step 5 and consumed consistently in Tasks 5–6.
 
-**Cross-plan handoff:** Plan B (parallel sweep) depends on `sim::apply_parameters`, `CompiledOcp.validator`, and compile-once `set_parameters` delivered here.
+**Const-correctness check:** `set_parameters` is `const` (Task 3); it forwards through `unique_ptr<ADBackend>` to a non-const backend method, so a solver holding `const NLPProblem&` (`ipopt_solver.cpp:280`) injects legally. Verified by the const-ref test in Task 3 Step 1.
+
+**Cross-plan handoff:** Plan B (parallel sweep) depends on `sim::solve_with_parameters`, `Solver::solve(…, parameters)`, `CompiledOcp.validator`, and compile-once behavior delivered here. Plan B (`2026-08-02-parallel-sweep-harness.md`) has been updated to consume this solve-time API.
