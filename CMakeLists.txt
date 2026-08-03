@@ -54,7 +54,9 @@ add_executable(goss_ad_tests
   tests/ad/test_verification.cpp
   tests/ad/test_ad_backend_contract.cpp
   tests/ad/test_cppadcg_link.cpp
-  tests/ad/test_cppadcg_backend.cpp)
+  tests/ad/test_cppadcg_backend.cpp
+  tests/ad/test_dynamic_param_spike.cpp
+  tests/ad/test_parametric_backend.cpp)
 # test_cppadcg_link.cpp instantiates CppAD::Independent / ADFun<CGD> directly in
 # the test TU, so cppad_lib must be linked here in addition to what goss_ad_impl
 # already pulls in transitively.
@@ -71,7 +73,8 @@ target_link_libraries(goss_nlp PUBLIC goss_ad)
 add_executable(goss_nlp_tests
   tests/nlp/test_nlp_construction.cpp
   tests/nlp/test_nlp_eval.cpp
-  tests/nlp/test_nlp_integration.cpp)
+  tests/nlp/test_nlp_integration.cpp
+  tests/nlp/test_nlp_parameters.cpp)
 target_link_libraries(goss_nlp_tests PRIVATE
   goss_nlp goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 target_include_directories(goss_nlp_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
@@ -142,7 +145,8 @@ add_executable(goss_transcription_tests
   tests/transcription/test_mesh_refinement.cpp
   tests/transcription/test_lgl_nodes.cpp
   tests/transcription/test_hp_mesh.cpp
-  tests/transcription/test_hp_pseudospectral.cpp)
+  tests/transcription/test_hp_pseudospectral.cpp
+  tests/transcription/test_parametric_transcription.cpp)
 target_include_directories(goss_transcription_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_transcription_tests PRIVATE
@@ -166,7 +170,8 @@ add_executable(goss_model_tests
   tests/model/test_expr_nodes.cpp
   tests/model/test_expr_lowering.cpp
   tests/model/test_expr_solve.cpp
-  tests/model/test_path_constraint_lowering.cpp)
+  tests/model/test_path_constraint_lowering.cpp
+  tests/model/test_parameters.cpp)
 target_include_directories(goss_model_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_model_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
@@ -184,7 +189,8 @@ add_executable(goss_sim_tests
   tests/sim/test_trajectory.cpp
   tests/sim/test_validation.cpp
   tests/sim/test_diagnostics.cpp
-  tests/sim/test_sim_workflow.cpp)
+  tests/sim/test_sim_workflow.cpp
+  tests/sim/test_parameters.cpp)
 target_include_directories(goss_sim_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_sim_tests PRIVATE
   goss_sim goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
@@ -225,7 +231,8 @@ add_executable(goss_accuracy_tests
   tests/accuracy/test_composition_accuracy.cpp
   tests/accuracy/test_dae_accuracy.cpp
   tests/accuracy/test_path_constraint_accuracy.cpp
-  tests/accuracy/test_hp_accuracy.cpp)
+  tests/accuracy/test_hp_accuracy.cpp
+  tests/accuracy/test_parametric_queue.cpp)
 target_include_directories(goss_accuracy_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_accuracy_tests PRIVATE
   goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver

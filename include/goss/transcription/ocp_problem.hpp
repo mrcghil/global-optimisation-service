@@ -1,6 +1,7 @@
 // include/goss/transcription/ocp_problem.hpp
 #pragma once
 #include <cstddef>
+#include <string>
 #include <vector>
 #include "goss/transcription/errors.hpp"
 
@@ -135,6 +136,17 @@ struct OcpProblem {
     /// AD-safety: PathConstraintFn must be fully templated so its operator()
     /// instantiates correctly under both double and CppAD::AD<CppAD::cg::CG<double>>.
     PathConstraintFn path_constraints = PathConstraintFn{};
+
+    // ---- Parameter fields (members 22-26) ----
+    // Declared parameters from Model::add_parameter(). These fields are carried
+    // through OcpProblem so downstream tools (e.g. ParameterValidator, sweep
+    // harness) have access to the model's parameter metadata without holding a
+    // reference to the Model instance.
+    std::size_t num_parameters = 0;
+    std::vector<std::string> parameter_names;     // size == num_parameters
+    std::vector<double> parameter_defaults;       // size == num_parameters
+    std::vector<double> parameter_lower;          // size == num_parameters
+    std::vector<double> parameter_upper;          // size == num_parameters
 };
 
 }  // namespace goss::transcription

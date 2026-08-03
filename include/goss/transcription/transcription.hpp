@@ -1,6 +1,7 @@
 // include/goss/transcription/transcription.hpp
 #pragma once
 #include <memory>
+#include "goss/model/parameter.hpp"
 #include "goss/nlp/nlp_problem.hpp"
 #include "goss/transcription/variable_layout.hpp"
 
@@ -22,6 +23,7 @@ constexpr double kInf = 2e19;
 struct CompiledOcp {
     std::unique_ptr<nlp::NLPProblem> problem;
     VariableLayout layout;
+    model::ParameterValidator validator{ std::vector<model::ParameterSpec>{} };   // empty (no params) by default
 };
 
 }  // namespace goss::transcription
