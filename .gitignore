@@ -1,6 +1,9 @@
 # Build output
 build/
 
+# Git worktrees (isolated SDD workspaces)
+.worktrees/
+
 # SDD / superpowers scratch (ledgers, briefs, reports)
 .superpowers/
 
