@@ -6,6 +6,7 @@
 #include <vector>
 #include "goss/model/errors.hpp"
 #include "goss/model/handles.hpp"
+#include "goss/model/parameter.hpp"
 #include "goss/transcription/ocp_problem.hpp"
 #include "goss/transcription/transcription.hpp"  // kInf
 
@@ -62,6 +63,36 @@ class Model {
 
     std::size_t num_states() const { return state_names_.size(); }
     std::size_t num_controls() const { return control_names_.size(); }
+
+    /// Declares a model parameter with a name, default value, and optional
+    /// bounds. Returns a ParameterHandle whose index can be used to index into
+    /// a parameter vector at solve time.
+    ///
+    /// Throws ModelError if:
+    ///   - name collides with an existing state, control, or parameter name,
+    ///   - lower_bound > upper_bound,
+    ///   - default_value is outside [lower_bound, upper_bound].
+    ParameterHandle add_parameter(const std::string& name,
+                                  double default_value,
+                                  double lower_bound = -transcription::kInf,
+                                  double upper_bound =  transcription::kInf) {
+        ensure_unique_name(name);
+        if (lower_bound > upper_bound)
+            throw ModelError("add_parameter: lower > upper for parameter '" + name + "'");
+        if (default_value < lower_bound || default_value > upper_bound)
+            throw ModelError("add_parameter: default for parameter '" + name +
+                             "' is outside its bounds");
+        const std::size_t index = parameter_specs_.size();
+        parameter_specs_.push_back(ParameterSpec{name, default_value, lower_bound, upper_bound});
+        return ParameterHandle{index};
+    }
+
+    std::size_t num_parameters() const { return parameter_specs_.size(); }
+
+    /// Returns a ParameterValidator built from the currently declared parameters.
+    /// The validator checks size, NaN, and per-parameter bounds, throwing ModelError
+    /// with a message that names the offending parameter and its bound.
+    ParameterValidator parameter_validator() const { return ParameterValidator(parameter_specs_); }
 
     const std::string& state_name(std::size_t index) const {
         if (index >= state_names_.size()) {
@@ -152,10 +183,35 @@ class Model {
             final_fixed[i] = final_fixed_[i]   ? 1.0 : 0.0;
         }
 
+        // Build per-parameter vectors from parameter_specs_ before the aggregate.
+        // We do this outside the initializer list for readability and to avoid
+        // relying on evaluation order of function arguments.
+        std::vector<std::string> param_names;
+        std::vector<double> param_defaults;
+        std::vector<double> param_lower;
+        std::vector<double> param_upper;
+        param_names.reserve(parameter_specs_.size());
+        param_defaults.reserve(parameter_specs_.size());
+        param_lower.reserve(parameter_specs_.size());
+        param_upper.reserve(parameter_specs_.size());
+        for (const ParameterSpec& spec : parameter_specs_) {
+            param_names.push_back(spec.name);
+            param_defaults.push_back(spec.default_value);
+            param_lower.push_back(spec.lower_bound);
+            param_upper.push_back(spec.upper_bound);
+        }
+
         // Use aggregate initialization so the lambdas are move-constructed rather
         // than default-constructed. Capturing lambdas have a deleted default
         // constructor, so we must not default-construct OcpProblem and then assign.
+        //
+        // Field order matches OcpProblem struct declaration EXACTLY (26 fields):
+        //   Fields  1-13 : base (num_states..final_state_fixed)
+        //   Fields 14-17 : algebraic defaults (0, NoAlgebraicResiduals{}, {}, {})
+        //   Fields 18-21 : path-constraint defaults (0, {}, {}, NoPathConstraints{})
+        //   Fields 22-26 : parameter metadata (num_parameters, names, defaults, lower, upper)
         return transcription::OcpProblem<DynamicsFn, CostFn>{
+            // --- 13 base fields ---
             state_names_.size(),
             control_names_.size(),
             std::move(dynamics),
@@ -168,7 +224,23 @@ class Model {
             initial_value_,
             std::move(init_fixed),
             final_value_,
-            std::move(final_fixed)
+            std::move(final_fixed),
+            // --- 4 algebraic defaults (fields 14-17) ---
+            std::size_t{0},
+            transcription::NoAlgebraicResiduals{},
+            std::vector<double>{},  // algebraic_lower_bounds (empty — no algebraic vars)
+            std::vector<double>{},  // algebraic_upper_bounds (empty — no algebraic vars)
+            // --- 4 path-constraint defaults (fields 18-21) ---
+            std::size_t{0},
+            std::vector<double>{},  // path_constraint_lower (empty — no path constraints)
+            std::vector<double>{},  // path_constraint_upper (empty — no path constraints)
+            transcription::NoPathConstraints{},
+            // --- 5 parameter fields (fields 22-26) ---
+            parameter_specs_.size(),
+            std::move(param_names),
+            std::move(param_defaults),
+            std::move(param_lower),
+            std::move(param_upper)
         };
     }
 
@@ -193,14 +265,15 @@ class Model {
             std::vector<double> path_constraint_upper_arg) const {
         // Reuse existing build() for all validation (state count, mesh, bounds checks).
         // Returns OcpProblem<DynamicsFn, CostFn> == <Dyn, Cost, NoAlgebraicResiduals,
-        // NoPathConstraints>, which we strip to pull the 13 base fields.
+        // NoPathConstraints>, which we strip to pull the 13 base fields (and param fields).
         auto base_ocp = build(std::move(dynamics_functor), std::move(cost_functor));
 
         // Aggregate-init the 4-param OcpProblem.
-        // Field order matches ocp_problem.hpp EXACTLY (21 fields total):
-        //   Fields 1-13  : base (num_states...final_state_fixed)
+        // Field order matches ocp_problem.hpp EXACTLY (26 fields total):
+        //   Fields  1-13 : base (num_states...final_state_fixed)
         //   Fields 14-17 : algebraic defaults (0, NoAlgebraicResiduals{}, {}, {})
         //   Fields 18-21 : path constraints (count, lower, upper, functor)
+        //   Fields 22-26 : parameter metadata (num_parameters, names, defaults, lower, upper)
         return transcription::OcpProblem<DynamicsFn, CostFn,
                                          transcription::NoAlgebraicResiduals,
                                          PathConstraintFn>{
@@ -218,17 +291,23 @@ class Model {
             std::move(base_ocp.initial_state_fixed),
             std::move(base_ocp.final_state),
             std::move(base_ocp.final_state_fixed),
-            // --- 4 algebraic defaults (field 14-17) ---
+            // --- 4 algebraic defaults (fields 14-17) ---
             // num_algebraic == 0: no DAE algebraic variables in this problem.
             std::size_t{0},
             transcription::NoAlgebraicResiduals{},
             std::vector<double>{},  // algebraic_lower_bounds (empty — no algebraic vars)
             std::vector<double>{},  // algebraic_upper_bounds (empty — no algebraic vars)
-            // --- 4 path-constraint fields (field 18-21) ---
+            // --- 4 path-constraint fields (fields 18-21) ---
             num_path_constraints_arg,
             std::move(path_constraint_lower_arg),
             std::move(path_constraint_upper_arg),
-            std::move(path_constraint_functor)
+            std::move(path_constraint_functor),
+            // --- 5 parameter fields (fields 22-26) — carry through from base_ocp ---
+            base_ocp.num_parameters,
+            std::move(base_ocp.parameter_names),
+            std::move(base_ocp.parameter_defaults),
+            std::move(base_ocp.parameter_lower),
+            std::move(base_ocp.parameter_upper)
         };
     }
 
@@ -242,7 +321,7 @@ class Model {
             throw ModelError(std::string(who) + ": control index out of range");
     }
 
-    /// Throws ModelError if name is already registered as a state or control.
+    /// Throws ModelError if name is already registered as a state, control, or parameter.
     void ensure_unique_name(const std::string& name) const {
         for (const auto& existing : state_names_) {
             if (existing == name) {
@@ -252,6 +331,11 @@ class Model {
         for (const auto& existing : control_names_) {
             if (existing == name) {
                 throw ModelError("Model: duplicate name '" + name + "' (already a control)");
+            }
+        }
+        for (const auto& existing_spec : parameter_specs_) {
+            if (existing_spec.name == name) {
+                throw ModelError("Model: duplicate name '" + name + "' (already a parameter)");
             }
         }
     }
@@ -266,6 +350,8 @@ class Model {
     std::vector<bool>   initial_fixed_;
     std::vector<double> final_value_;
     std::vector<bool>   final_fixed_;
+
+    std::vector<ParameterSpec> parameter_specs_;
 
     bool                 mesh_set_ = false;
     transcription::Mesh  mesh_{0.0, 1.0, 1};
