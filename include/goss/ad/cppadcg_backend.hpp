@@ -56,18 +56,6 @@ CompiledModel compile_and_load(CppAD::ADFun<CGScalar>& fun,
 /// Jacobian and Hessian evaluation use permutations precomputed at construction for O(nnz) sparse output aligned to the sparsity pattern.
 class CppADCGBackend : public ADBackend {
  public:
-    /// Records `function` as a CppAD tape and JIT-compiles it.
-    ///
-    /// @param function     Callable with signature
-    ///                     `std::vector<T> operator()(const std::vector<T>&)`
-    ///                     templated on AD scalar type T.
-    /// @param input_size   Number of independent variables.
-    /// @param model_name   Name for the generated shared library (must be a
-    ///                     valid C identifier).  The name determines the
-    ///                     JIT-compiled shared-library filename, so it must be
-    ///                     unique across concurrently-built models/processes to
-    ///                     avoid collision; parallel test runs must use distinct
-    ///                     names.
     /// Records `function(z, p)` as a CppAD tape over a COMBINED domain
     /// z_combined = [x_0..x_{nv-1}, p_0..p_{np-1}] and JIT-compiles ONCE.
     ///
@@ -554,6 +542,18 @@ class CppADCGBackend : public ADBackend {
                 " values, expected " +
                 std::to_string(compiled_.hess_rows.size()));
         }
+        // Defensive guard for the parametric path: each hess_perm_[k] must be a
+        // valid index into raw_values. Mirrors the analogous guard in eval_jacobian.
+        // A mismatch would indicate a sparsity-pattern change between construction
+        // and evaluation time (should never happen for well-formed models).
+        if (parameter_size_ > 0) {
+            for (std::size_t k = 0; k < hess_perm_.size(); ++k) {
+                if (hess_perm_[k] >= raw_values.size()) {
+                    throw ADError(
+                        "eval_hessian: hess_perm_ index out of range in raw SparseHessian output");
+                }
+            }
+        }
 
         // Apply precomputed permutation: aligned[k] = raw[hess_perm_[k]].
         // For parametric backends hess_perm_ covers only x-only lower-triangle
@@ -599,6 +599,7 @@ class CppADCGBackend : public ADBackend {
     ///
     /// For parametric backends (parameter_size_ > 0) a new vector is allocated.
     /// We store it in combined_buffer_ to allow the const method to write it.
+    // TODO: could pre-allocate combined_buffer_ at construction to avoid the per-call resize
     const std::vector<double>& build_combined_vector(
         const std::vector<double>& x) const {
         if (parameter_size_ == 0) {
@@ -617,6 +618,8 @@ class CppADCGBackend : public ADBackend {
     /// Mutable scratch buffer for build_combined_vector() in the parametric path.
     /// Declared mutable so const eval methods can write to it without losing the
     /// const qualifier on the public interface.
+    /// NOTE: shared mutable state — this backend is NOT thread-safe for concurrent
+    /// eval calls on the same instance; the sweep harness uses per-worker instances.
     mutable std::vector<double> combined_buffer_;
 };
 

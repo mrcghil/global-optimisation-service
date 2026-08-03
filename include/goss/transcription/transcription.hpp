@@ -23,7 +23,7 @@ constexpr double kInf = 2e19;
 struct CompiledOcp {
     std::unique_ptr<nlp::NLPProblem> problem;
     VariableLayout layout;
-    model::ParameterValidator validator{ {} };   // empty (no params) by default
+    model::ParameterValidator validator{ std::vector<model::ParameterSpec>{} };   // empty (no params) by default
 };
 
 }  // namespace goss::transcription

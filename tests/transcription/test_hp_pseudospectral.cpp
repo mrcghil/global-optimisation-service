@@ -185,6 +185,30 @@ TEST(HpPseudospectral, RejectsFreeInitialState) {
         goss::transcription::TranscriptionError);
 }
 
+// --- Test 4b: compile_hp rejects parametric problems (I-1 guard) ---
+// compile_hp uses the non-parametric backend; a problem with num_parameters > 0
+// would silently produce a wrong NLP (parameters ignored). The guard must throw
+// TranscriptionError before reaching backend construction.
+TEST(HpPseudospectral, CompileHpRejectsParameters) {
+    // Build a minimal exp-decay OCP and set num_parameters = 1.
+    auto ocp = goss::transcription::test::make_exponential_decay(
+        1.0, 1.0, /*intervals=*/3);
+    // Attach a single parameter (the guard only requires num_parameters > 0).
+    ocp.num_parameters = 1;
+    ocp.parameter_names    = {"k"};
+    ocp.parameter_defaults = {1.0};
+    ocp.parameter_lower    = {0.0};
+    ocp.parameter_upper    = {10.0};
+
+    goss::transcription::HpMesh hp_mesh;
+    hp_mesh.segment_boundary_times = {0.0, 0.5, 1.0};
+    hp_mesh.per_segment_node_count = {3, 3};
+
+    EXPECT_THROW(
+        goss::transcription::LegendreGaussLobatto::compile_hp(ocp, hp_mesh, "hp_param_guard"),
+        goss::transcription::TranscriptionError);
+}
+
 // --- Test 5: 3-segment hp solve on exp-decay ---
 // Partition [0,1] into 3 segments: [0,0.3], [0.3,0.7], [0.7,1.0] with 4+5+4=13 nodes.
 // The solution at the last global node must approximate exp(-1) to 1e-5.

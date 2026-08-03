@@ -325,6 +325,16 @@ struct LegendreGaussLobatto {
                 "(num_path_constraints > 0) are not supported by hp-pseudospectral "
                 "in v1; use HermiteSimpson for path-constrained problems.");
         }
+        // Guard: parameters not supported in hp-pseudospectral v1.
+        // compile_hp uses the non-parametric backend (single-argument constructor),
+        // so a problem with num_parameters > 0 would silently ignore parameters,
+        // producing a wrong NLP. Fail loudly here rather than at apply_parameters time.
+        if (ocp.num_parameters > 0) {
+            throw TranscriptionError(
+                "LegendreGaussLobatto::compile_hp: parameters (num_parameters > 0) are not "
+                "supported by hp-pseudospectral in v1; use HermiteSimpson::compile or "
+                "Trapezoidal::compile for parametric problems.");
+        }
 
         // Verify that the hp_mesh time horizon matches the OcpProblem mesh.
         if (std::abs(hp_mesh.t_initial() - ocp.mesh.t_initial) > 1e-12 ||
