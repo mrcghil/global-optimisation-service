@@ -152,9 +152,29 @@ SweepPoint deserialize_sweep_point(const std::vector<char>& bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// Fork-based single-point worker — DRY helpers shared by solve_point_in_child
-// and the parallel process-pool scheduler.
+// Fork-based single-point worker — internal DRY helpers shared by
+// solve_point_in_child and the parallel process-pool scheduler.  These are
+// TU-private (anonymous namespace): the public API is solve_point_in_child and
+// run_sweep_parallel, which own the launch/collect lifecycle so callers cannot
+// accidentally leak a child by pairing launch/collect incorrectly.
 // ---------------------------------------------------------------------------
+
+namespace {
+
+/// Identifies a live child and the parent's read-end of its result pipe.
+struct WorkerHandle {
+    pid_t pid;
+    int   read_fd;
+};
+
+/// Result of draining a worker pipe: the deserialized point plus whether the
+/// child produced no output at all (crashed before writing).  The flag lets
+/// classify_crash decide whether to overwrite the message with waitpid detail
+/// without coupling to a sentinel message string.
+struct DrainedPoint {
+    SweepPoint point;
+    bool       empty_buffer = false;
+};
 
 /// Forks a child that applies `parameters`, solves, writes the serialized
 /// SweepPoint to a pipe, and calls ::_exit(0).
@@ -246,19 +266,18 @@ WorkerHandle launch_worker(nlp::NLPProblem& problem,
 // ---------------------------------------------------------------------------
 
 /// Drains `read_fd` to EOF (closing it when done), then deserializes and
-/// returns the SweepPoint.
+/// returns the SweepPoint together with an `empty_buffer` flag.
 ///
 /// If the pipe yielded no data at all (child crashed before writing anything),
-/// returns a default-constructed Failure SweepPoint with an appropriate
-/// message and the supplied `parameters` filled in; the caller is responsible
-/// for refining the message after inspecting the waitpid status (signal vs
-/// exit code).
+/// `empty_buffer` is true and the point is a baseline Failure carrying the
+/// supplied `parameters`; the caller refines the message after inspecting the
+/// waitpid status (signal vs exit code) via classify_crash.
 ///
 /// Throws SimError only if the accumulated data is non-empty but malformed
 /// (truncated payload / trailing bytes) — that is a real IO error, not a
 /// child-side failure.
-static SweepPoint drain_and_deserialize(int read_fd,
-                                        const std::vector<double>& parameters) {
+DrainedPoint drain_and_deserialize(int read_fd,
+                                   const std::vector<double>& parameters) {
     std::vector<char> accumulated_buffer;
     char read_chunk[4096];
     ssize_t bytes_read = 0;
@@ -275,26 +294,22 @@ static SweepPoint drain_and_deserialize(int read_fd,
         failure_point.parameters = parameters;
         failure_point.status     = solver::SolverStatus::Failure;
         failure_point.message    = "worker produced no output";
-        return failure_point;
+        return DrainedPoint{std::move(failure_point), /*empty_buffer=*/true};
     }
 
-    return deserialize_sweep_point(accumulated_buffer);
+    return DrainedPoint{deserialize_sweep_point(accumulated_buffer),
+                        /*empty_buffer=*/false};
 }
 
-/// Applies waitpid status to a SweepPoint that was returned by
-/// drain_and_deserialize with an empty buffer (status == Failure and message
-/// == "worker produced no output").  If the buffer was non-empty the point
-/// already carries the solver's own message and we leave it unchanged.
+/// Refines a drained point's message from the child's waitpid status when the
+/// child produced no output (`empty_buffer`).  A non-empty buffer means the
+/// child wrote a result — even on a non-zero exit the deserialized message is
+/// more informative, so it is left unchanged.
 ///
-/// This helper ensures both the blocking path (collect_worker) and the pool
-/// path share identical crash-classification semantics.
-static void classify_crash(SweepPoint& point, int wait_status) {
-    // Only re-classify points that came from an empty buffer (no data written
-    // by the child).  A non-empty buffer means the child wrote a result — even
-    // if it exited non-zero, the deserialized message is more informative.
-    if (point.status != solver::SolverStatus::Failure ||
-        point.message != "worker produced no output")
-        return;
+/// This helper ensures both the blocking path (solve_point_in_child) and the
+/// pool path share identical crash-classification semantics.
+void classify_crash(SweepPoint& point, bool empty_buffer, int wait_status) {
+    if (!empty_buffer) return;
 
     if (WIFSIGNALED(wait_status)) {
         point.message =
@@ -320,14 +335,16 @@ static void classify_crash(SweepPoint& point, int wait_status) {
 /// itself finds a corrupt payload.
 SweepPoint collect_worker(const WorkerHandle& handle,
                           const std::vector<double>& parameters) {
-    SweepPoint point = drain_and_deserialize(handle.read_fd, parameters);
+    DrainedPoint drained = drain_and_deserialize(handle.read_fd, parameters);
 
     int wait_status = 0;
     ::waitpid(handle.pid, &wait_status, 0);
 
-    classify_crash(point, wait_status);
-    return point;
+    classify_crash(drained.point, drained.empty_buffer, wait_status);
+    return std::move(drained.point);
 }
+
+}  // namespace
 
 /// Convenience wrapper: launch_worker followed by an immediate collect_worker.
 /// Blocks until the child exits and its result is fully deserialized.
@@ -345,10 +362,12 @@ SweepPoint solve_point_in_child(nlp::NLPProblem& problem,
 // Bounded process-pool parallel sweep
 // ---------------------------------------------------------------------------
 
+namespace {
+
 /// Resolves the effective worker cap from `config.max_parallel_workers`:
 ///   - 0  → std::thread::hardware_concurrency() (fallback 1 if that returns 0)
 ///   - >0 → use as-is
-static std::size_t resolve_worker_cap(const SweepConfig& config) {
+std::size_t resolve_worker_cap(const SweepConfig& config) {
     if (config.max_parallel_workers > 0)
         return config.max_parallel_workers;
     const unsigned int hardware_threads = std::thread::hardware_concurrency();
@@ -362,6 +381,8 @@ struct LiveWorkerEntry {
     WorkerHandle handle;
     std::size_t  grid_index;
 };
+
+}  // namespace
 
 SweepResult run_sweep_parallel(
         nlp::NLPProblem& problem,
@@ -494,10 +515,10 @@ SweepResult run_sweep_parallel(
                 // genuine IO error it is.  The normal (non-throwing) path also
                 // calls waitpid exactly once — no double-reap on either path.
                 int wait_status = 0;
-                SweepPoint point;
+                DrainedPoint drained;
                 try {
-                    point = drain_and_deserialize(ready.read_fd,
-                                                  parameter_grid[ready.grid_index]);
+                    drained = drain_and_deserialize(
+                        ready.read_fd, parameter_grid[ready.grid_index]);
                     // Now that the pipe is drained the child is guaranteed to have
                     // exited (it closes the write end before/after _exit(0)).
                     ::waitpid(ready.pid, &wait_status, 0);
@@ -508,10 +529,10 @@ SweepResult run_sweep_parallel(
                     throw;  // propagate the SimError unchanged
                 }
 
-                classify_crash(point, wait_status);
+                classify_crash(drained.point, drained.empty_buffer, wait_status);
 
                 // Write to the original grid index — preserves order-invariant.
-                result.points[ready.grid_index] = std::move(point);
+                result.points[ready.grid_index] = std::move(drained.point);
 
                 // Immediately launch the next pending grid point to keep the pool
                 // full.  Safe to emplace here: the first-pass scan is finished.

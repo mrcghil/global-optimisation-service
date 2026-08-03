@@ -207,10 +207,22 @@ add_executable(goss_sim_tests
   tests/sim/test_sweep_workflow.cpp)
 target_include_directories(goss_sim_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_sim_tests PRIVATE
-  goss_sim_impl goss_sim goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
+  goss_sim_impl goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
   goss_ipopt_iface goss_nlopt_iface cppadcg
   $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
-gtest_discover_tests(goss_sim_tests)
+# goss_sim (INTERFACE) is linked transitively via goss_sim_impl's PUBLIC deps.
+#
+# The parallel sweep itself forks multiple concurrent IPOPT solves by design;
+# running it alongside other heavy tests under `ctest -j` causes CPU contention
+# that can make it exceed its time budget.  Discover it separately with
+# RUN_SERIAL so ctest never schedules another test concurrently with it (it
+# still runs — it is not disabled).  set_tests_properties cannot be used because
+# gtest_discover_tests registers test names at build time, not configure time.
+gtest_discover_tests(goss_sim_tests
+  TEST_FILTER -SweepParallel.MatchesSerialResultsInOrder)
+gtest_discover_tests(goss_sim_tests
+  TEST_FILTER SweepParallel.MatchesSerialResultsInOrder
+  PROPERTIES RUN_SERIAL TRUE)
 
 # ---- Benchmark harness layer ----
 add_library(goss_bench INTERFACE)
