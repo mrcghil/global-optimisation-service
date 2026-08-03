@@ -1,6 +1,8 @@
 // include/goss/ad/ad_backend.hpp
 #pragma once
+#include <string>
 #include <vector>
+#include "goss/ad/errors.hpp"
 #include "goss/ad/types.hpp"
 namespace goss::ad {
 class ADBackend {
@@ -37,5 +39,19 @@ class ADBackend {
     /// is the Hessian value at the index pair hessian_sparsity()[k].
     virtual std::vector<double> eval_hessian(const std::vector<double>& x,
                                              const std::vector<double>& weights) const = 0;
+
+    /// Number of injectable parameters (values fixed per-evaluation, held
+    /// constant across the solver's x-iterations). Zero unless the backend was
+    /// recorded with a parameter functor.
+    virtual std::size_t num_parameters() const { return 0; }
+
+    /// Injects the parameter vector for all subsequent eval/jacobian/hessian
+    /// calls. Throws ADError if parameter_values.size() != num_parameters().
+    /// Default: accepts only an empty vector (no parameters).
+    virtual void set_parameters(const std::vector<double>& parameter_values) {
+        if (!parameter_values.empty())
+            throw ADError("set_parameters: backend has no parameters but " +
+                          std::to_string(parameter_values.size()) + " were provided");
+    }
 };
 }  // namespace goss::ad

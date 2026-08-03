@@ -55,7 +55,8 @@ add_executable(goss_ad_tests
   tests/ad/test_ad_backend_contract.cpp
   tests/ad/test_cppadcg_link.cpp
   tests/ad/test_cppadcg_backend.cpp
-  tests/ad/test_dynamic_param_spike.cpp)
+  tests/ad/test_dynamic_param_spike.cpp
+  tests/ad/test_parametric_backend.cpp)
 # test_cppadcg_link.cpp instantiates CppAD::Independent / ADFun<CGD> directly in
 # the test TU, so cppad_lib must be linked here in addition to what goss_ad_impl
 # already pulls in transitively.
