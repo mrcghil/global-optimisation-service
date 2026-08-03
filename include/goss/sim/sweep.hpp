@@ -1,14 +1,43 @@
 #pragma once
 #include <cstddef>
+#include <string>
 #include <vector>
 #include "goss/model/errors.hpp"
 #include "goss/model/parameter.hpp"
 #include "goss/nlp/nlp_problem.hpp"
+#include "goss/sim/errors.hpp"
 #include "goss/sim/parameters.hpp"
 #include "goss/sim/sweep_result.hpp"
 #include "goss/solver/solver.hpp"
 
 namespace goss::sim {
+
+/// Cartesian product of per-parameter value axes. axes[i] is the list of
+/// values for parameter i; returns every combination, with parameter 0 varying
+/// slowest (row-major). Throws SimError if axes is empty or any axis is empty.
+inline std::vector<std::vector<double>> make_grid(
+        const std::vector<std::vector<double>>& axes) {
+    if (axes.empty())
+        throw SimError("make_grid: at least one parameter axis is required");
+    for (std::size_t i = 0; i < axes.size(); ++i)
+        if (axes[i].empty())
+            throw SimError("make_grid: axis " + std::to_string(i) + " is empty");
+
+    std::vector<std::vector<double>> grid = {{}};
+    for (const std::vector<double>& axis : axes) {
+        std::vector<std::vector<double>> next;
+        next.reserve(grid.size() * axis.size());
+        for (const std::vector<double>& prefix : grid)
+            for (double value : axis) {
+                std::vector<double> combination = prefix;
+                combination.push_back(value);
+                next.push_back(std::move(combination));
+            }
+        grid = std::move(next);
+    }
+    return grid;
+}
+
 
 /// Configuration for the parallel process-pool sweep executor.
 struct SweepConfig {

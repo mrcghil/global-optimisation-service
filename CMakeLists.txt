@@ -202,7 +202,8 @@ add_executable(goss_sim_tests
   tests/sim/test_sweep_result.cpp
   tests/sim/test_sweep_serial.cpp
   tests/sim/test_sweep_worker.cpp
-  tests/sim/test_sweep_parallel.cpp)
+  tests/sim/test_sweep_parallel.cpp
+  tests/sim/test_sweep_grid.cpp)
 target_include_directories(goss_sim_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_sim_tests PRIVATE
   goss_sim_impl goss_sim goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver
