@@ -13,6 +13,7 @@ type Row = {
 
 const rows = benchmarks as Row[];
 const fmtSci = (n: number) => (n === 0 ? '0' : n.toExponential(2));
+const schemeLabel = (s: string) => ({ HermiteSimpson: 'Hermite–Simpson' }[s] ?? s);
 ---
 
 <table>
@@ -30,7 +31,7 @@ const fmtSci = (n: number) => (n === 0 ? '0' : n.toExponential(2));
   <tbody>
     {rows.map((r) => (
       <tr>
-        <td>{r.scheme}</td>
+        <td>{schemeLabel(r.scheme)}</td>
         <td>{r.solver}</td>
         <td>{r.status}</td>
         <td>{fmtSci(r.objective)}</td>
