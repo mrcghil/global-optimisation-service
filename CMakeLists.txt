@@ -232,6 +232,17 @@ target_link_libraries(goss_bench_tests PRIVATE
     $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_bench_tests)
 
+# ---- Benchmark CSV exporter (standalone tool) ----
+# Writes the flagship (scheme x solver) benchmark matrix to a CSV file
+# for consumption by the documentation site's data pipeline.
+# Does NOT depend on GoogleTest — it is a plain executable.
+add_executable(goss_bench_export tools/bench_export/main.cpp)
+target_link_libraries(goss_bench_export PRIVATE
+    goss_bench goss_sim goss_solver goss_model goss_transcription
+    goss_nlp goss_ad goss_ad_impl
+    goss_ipopt_iface goss_nlopt_iface cppadcg
+    $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
+
 # ---- Accuracy validation suite ----
 # Shared yardstick for all transcription schemes and future features.
 # Links identically to goss_model_tests so every API available there
