@@ -29,6 +29,13 @@ class NLPProblem {
     std::size_t num_variables() const { return num_variables_; }
     std::size_t num_constraints() const { return num_constraints_; }
 
+    /// Number of injectable parameters (forwarded from the AD backend).
+    std::size_t num_parameters() const;
+
+    /// Injects the parameter vector for subsequent evaluations. Forwards to the
+    /// backend; propagates ADError on size mismatch.
+    void set_parameters(const std::vector<double>& parameter_values);
+
     const std::vector<double>& variable_lower_bounds() const { return variable_lower_bounds_; }
     const std::vector<double>& variable_upper_bounds() const { return variable_upper_bounds_; }
     const std::vector<double>& constraint_lower_bounds() const { return constraint_lower_bounds_; }

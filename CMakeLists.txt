@@ -73,7 +73,8 @@ target_link_libraries(goss_nlp PUBLIC goss_ad)
 add_executable(goss_nlp_tests
   tests/nlp/test_nlp_construction.cpp
   tests/nlp/test_nlp_eval.cpp
-  tests/nlp/test_nlp_integration.cpp)
+  tests/nlp/test_nlp_integration.cpp
+  tests/nlp/test_nlp_parameters.cpp)
 target_link_libraries(goss_nlp_tests PRIVATE
   goss_nlp goss_ad goss_ad_impl cppadcg $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 target_include_directories(goss_nlp_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)

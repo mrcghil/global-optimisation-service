@@ -58,6 +58,14 @@ NLPProblem::NLPProblem(std::unique_ptr<ad::ADBackend> backend,
     }
 }
 
+std::size_t NLPProblem::num_parameters() const {
+    return backend_->num_parameters();
+}
+
+void NLPProblem::set_parameters(const std::vector<double>& parameter_values) {
+    backend_->set_parameters(parameter_values);
+}
+
 double NLPProblem::eval_objective(const std::vector<double>& x) const {
     if (x.size() != num_variables_) {
         throw NLPError("eval_objective: x.size() != num_variables");
