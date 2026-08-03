@@ -8,10 +8,11 @@ sidebar:
 import BenchmarkTable from '../../../../components/BenchmarkTable.astro';
 import { Aside } from '@astrojs/starlight/components';
 
-The table below reports each transcription scheme paired with each solver on a
-reference exp-decay problem (`dx/dt = -x`, zero running cost). Timing covers the
-solve call only; the validation error is the RK4 re-integration deviation
-described in [Validation](/en/reference/validation/).
+The table below reports the two local transcription schemes (Trapezoidal and
+Hermite–Simpson), each paired with each solver, on a reference exp-decay problem
+(`dx/dt = -x`, zero running cost). Timing covers the solve call only; the
+validation error is the RK4 re-integration deviation described in
+[Validation](/en/reference/validation/).
 
 <BenchmarkTable />
 
@@ -21,5 +22,4 @@ derivative-free NLopt baseline is included to validate the model independent of
 the derivative path and may hit its iteration limit rather than converge.
 </Aside>
 
-These numbers are regenerated from the goss benchmark harness; see the
-regeneration script in the repository for details.
+These numbers are regenerated periodically from the goss benchmark harness.

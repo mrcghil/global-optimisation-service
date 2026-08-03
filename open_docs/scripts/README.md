@@ -26,7 +26,6 @@ The script runs `goss_bench_export`, reads its CSV, and rewrites
 
 ## Convergence (`src/data/convergence.json`)
 
-Regenerated manually for now — the accuracy tests
-(`tests/accuracy/test_convergence_order.cpp`) do not yet emit a machine-readable
-file. Update `src/data/convergence.json` by hand from those test results until a
-dedicated exporter exists.
+Regenerated manually for now — the convergence-order accuracy tests do not yet
+emit a machine-readable file. Update `src/data/convergence.json` by hand from
+those test results until a dedicated exporter exists.
