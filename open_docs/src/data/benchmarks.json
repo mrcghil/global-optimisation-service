@@ -1,0 +1,6 @@
+[
+  { "scheme": "Trapezoidal",    "solver": "IpoptSolver", "status": "Success",        "objective": 0.0, "elapsed_s": 0.0121, "validation_error": 3.2e-4, "num_variables": 21 },
+  { "scheme": "Trapezoidal",    "solver": "NloptSolver", "status": "IterationLimit", "objective": 0.0, "elapsed_s": 0.0473, "validation_error": 0.0,    "num_variables": 21 },
+  { "scheme": "HermiteSimpson", "solver": "IpoptSolver", "status": "Success",        "objective": 0.0, "elapsed_s": 0.0189, "validation_error": 7.5e-6, "num_variables": 41 },
+  { "scheme": "HermiteSimpson", "solver": "NloptSolver", "status": "IterationLimit", "objective": 0.0, "elapsed_s": 0.0662, "validation_error": 0.0,    "num_variables": 41 }
+]

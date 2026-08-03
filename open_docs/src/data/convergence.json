@@ -1,0 +1,8 @@
+[
+  { "scheme": "Trapezoidal",    "nodes": 10, "error": 2.1e-3, "theoretical_rate": "O(h^2)" },
+  { "scheme": "Trapezoidal",    "nodes": 20, "error": 5.3e-4, "theoretical_rate": "O(h^2)" },
+  { "scheme": "Trapezoidal",    "nodes": 40, "error": 1.3e-4, "theoretical_rate": "O(h^2)" },
+  { "scheme": "HermiteSimpson", "nodes": 10, "error": 8.0e-6, "theoretical_rate": "O(h^4)" },
+  { "scheme": "HermiteSimpson", "nodes": 20, "error": 5.0e-7, "theoretical_rate": "O(h^4)" },
+  { "scheme": "HermiteSimpson", "nodes": 40, "error": 3.1e-8, "theoretical_rate": "O(h^4)" }
+]
