@@ -189,7 +189,8 @@ add_executable(goss_sim_tests
   tests/sim/test_trajectory.cpp
   tests/sim/test_validation.cpp
   tests/sim/test_diagnostics.cpp
-  tests/sim/test_sim_workflow.cpp)
+  tests/sim/test_sim_workflow.cpp
+  tests/sim/test_parameters.cpp)
 target_include_directories(goss_sim_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_sim_tests PRIVATE
   goss_sim goss_model goss_transcription goss_nlp goss_ad goss_ad_impl goss_solver

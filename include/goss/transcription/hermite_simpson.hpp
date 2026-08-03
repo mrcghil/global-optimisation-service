@@ -271,7 +271,13 @@ struct HermiteSimpson {
 
         auto problem = std::make_unique<nlp::NLPProblem>(
             std::move(backend), std::move(zl), std::move(zu), std::move(gl), std::move(gu));
-        return CompiledOcp{std::move(problem), layout};
+        std::vector<model::ParameterSpec> param_specs;
+        param_specs.reserve(ocp.num_parameters);
+        for (std::size_t i = 0; i < ocp.num_parameters; ++i)
+            param_specs.push_back(model::ParameterSpec{
+                ocp.parameter_names[i], ocp.parameter_defaults[i],
+                ocp.parameter_lower[i], ocp.parameter_upper[i]});
+        return CompiledOcp{std::move(problem), layout, model::ParameterValidator(std::move(param_specs))};
     }
 
     // Backward-compatible uniform overload: delegates to the non-uniform path.
