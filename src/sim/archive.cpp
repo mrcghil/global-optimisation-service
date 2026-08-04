@@ -24,19 +24,77 @@ std::string status_string(solver::SolverStatus status) {
     return goss::bench::solver_status_name(status);
 }
 
+/// Per-run JSON entry shared by the sweep and campaign manifests: a LOGICAL
+/// reference ({problem, version, run_id}) plus the fields a dashboard needs to
+/// build its parameter map without opening each run's archive.
+nlohmann::json run_ref_json(const spec::RunArchive& run) {
+    return nlohmann::json{
+        {"run_id", run.run_id},
+        {"problem", run.spec.problem.name},
+        {"version", run.spec.problem.version},
+        {"parameters", run.spec.parameters},
+        {"status", status_string(run.result.status)},
+        {"objective", run.result.objective_value},
+        {"label", run.spec.label},
+    };
+}
+
+/// The per-sweep object embedded in both sweep.json and campaign.json.
+nlohmann::json sweep_json(const spec::SweepArchive& archive) {
+    nlohmann::json axes = nlohmann::json::array();
+    for (const spec::Axis& axis : archive.axes)
+        axes.push_back({{"parameter", axis.parameter}, {"values", axis.values}});
+
+    nlohmann::json runs = nlohmann::json::array();
+    for (const spec::RunArchive& run : archive.runs) runs.push_back(run_ref_json(run));
+
+    return nlohmann::json{
+        {"label", archive.spec.label},
+        {"combinator", archive.spec.combinator},
+        {"problem", archive.spec.base.problem.name},
+        {"version", archive.spec.base.problem.version},
+        {"axes", axes},
+        {"num_runs", archive.runs.size()},
+        {"num_succeeded", archive.num_succeeded()},
+        {"runs", runs},
+    };
+}
+
+void write_json_file(const std::string& path, const nlohmann::json& j) {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::ofstream file(path);
+    if (!file) throw SimError("archive: cannot open '" + path + "' for writing");
+    file << j.dump(2) << "\n";
+    if (!file) throw SimError("archive: write failed for '" + path + "'");
+}
+
+/// A filesystem-safe slug for a manifest directory name: keep [A-Za-z0-9._-],
+/// replace everything else with '_'.  Empty input yields "unnamed".
+std::string slug(const std::string& raw) {
+    if (raw.empty()) return "unnamed";
+    std::string out;
+    out.reserve(raw.size());
+    for (char c : raw) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        out.push_back(ok ? c : '_');
+    }
+    return out;
+}
+
 }  // namespace
 
+std::string resolve_root(const spec::StorageSpec& storage) {
+    if (!storage.root.empty()) return storage.root;
+    if (const char* env = std::getenv("GOSS_RESULTS_DIR"); env && *env) return env;
+    return "./goss-results";
+}
+
 std::string resolve_run_dir(const spec::RunArchive& archive) {
-    std::string root = archive.spec.storage.root;
-    if (root.empty()) {
-        if (const char* env = std::getenv("GOSS_RESULTS_DIR"); env && *env)
-            root = env;
-        else
-            root = "./goss-results";
-    }
-    const std::filesystem::path dir = std::filesystem::path(root) /
-                                      archive.spec.problem.name /
-                                      archive.spec.problem.version;
+    const std::filesystem::path dir =
+        std::filesystem::path(resolve_root(archive.spec.storage)) /
+        archive.spec.problem.name / archive.spec.problem.version;
     return dir.string();
 }
 
@@ -76,6 +134,57 @@ void write_sidecar(const std::string& path, const spec::RunArchive& archive) {
     if (!file) throw SimError("write_sidecar: cannot open '" + path + "' for writing");
     file << j.dump(2) << "\n";
     if (!file) throw SimError("write_sidecar: write failed for '" + path + "'");
+}
+
+std::string write_run(const spec::RunArchive& archive) {
+    const std::string sidecar = sidecar_path(archive);
+#ifdef GOSS_HAVE_HDF5
+    const std::string primary = archive_path(archive);
+    if (archive.spec.storage.skip_if_exists && std::filesystem::exists(primary))
+        return primary;  // content-addressed resume — already computed
+    write_run_archive(primary, archive);
+    write_sidecar(sidecar, archive);
+    return primary;
+#else
+    if (archive.spec.storage.skip_if_exists && std::filesystem::exists(sidecar))
+        return sidecar;
+    write_sidecar(sidecar, archive);
+    return sidecar;
+#endif
+}
+
+std::string write_sweep(const spec::SweepArchive& archive) {
+    for (const spec::RunArchive& run : archive.runs) write_run(run);
+
+    // Manifests live under the base root (not the problem/version subtree) so a
+    // dashboard can discover all sweeps/campaigns from one place.
+    const std::string root = archive.runs.empty()
+        ? resolve_root(spec::StorageSpec{})
+        : resolve_root(archive.runs.front().spec.storage);
+    const std::string dir_name = slug(archive.spec.label.empty()
+        ? (archive.spec.base.problem.name + "_" + archive.spec.base.problem.version)
+        : archive.spec.label);
+    const std::string path = (std::filesystem::path(root) / "sweeps" / dir_name /
+                              "sweep.json").string();
+    write_json_file(path, sweep_json(archive));
+    return path;
+}
+
+std::string write_campaign(const spec::CampaignArchive& archive) {
+    std::string root = resolve_root(spec::StorageSpec{});
+    nlohmann::json sweeps = nlohmann::json::array();
+    for (const spec::SweepArchive& sweep : archive.sweeps) {
+        for (const spec::RunArchive& run : sweep.runs) write_run(run);
+        if (!sweep.runs.empty())
+            root = resolve_root(sweep.runs.front().spec.storage);
+        sweeps.push_back(sweep_json(sweep));
+    }
+
+    const nlohmann::json campaign{{"name", archive.name}, {"sweeps", sweeps}};
+    const std::string path = (std::filesystem::path(root) / "campaigns" /
+                              slug(archive.name) / "campaign.json").string();
+    write_json_file(path, campaign);
+    return path;
 }
 
 #ifdef GOSS_HAVE_HDF5

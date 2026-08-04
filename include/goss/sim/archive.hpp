@@ -29,6 +29,35 @@ std::string sidecar_path(const spec::RunArchive& archive);
 /// Creates parent directories as needed.  Throws SimError on I/O failure.
 void write_sidecar(const std::string& path, const spec::RunArchive& archive);
 
+/// Applies the StorageSpec root precedence (explicit root, else
+/// $GOSS_RESULTS_DIR, else "./goss-results") WITHOUT the problem/version
+/// subdirectories — the base under which both the run store and the manifests
+/// live.
+std::string resolve_root(const spec::StorageSpec& storage);
+
+/// Writes a run's artifacts to their resolved paths: the JSON sidecar always,
+/// and the HDF5 archive when built with GOSS_HAVE_HDF5.  Honors
+/// storage.skip_if_exists (an existing HDF5, or sidecar when HDF5 is
+/// unavailable, is left untouched — content-addressed resume).  Returns the
+/// primary artifact path (the .h5 when available, else the sidecar).
+std::string write_run(const spec::RunArchive& archive);
+
+/// Writes every run of a sweep (via write_run) plus a location-independent
+/// `sweep.json` manifest at <root>/sweeps/<label-or-hash>/sweep.json.  The
+/// manifest records the named axes, combinator, and one entry per run
+/// referencing it LOGICALLY by {problem, version, run_id} together with its
+/// parameters, status, and objective — never a filesystem path, so the grouping
+/// survives moves.  Returns the manifest path.  Pure JSON (no HDF5 needed).
+std::string write_sweep(const spec::SweepArchive& archive);
+
+/// Writes every run of a campaign plus a single `campaign.json` at
+/// <root>/campaigns/<name>/campaign.json embedding the full
+/// campaign -> sweeps -> runs tree (same per-sweep shape as write_sweep).  One
+/// fetch of this file lets a dashboard build its whole navigation; per-run
+/// trajectory detail is read from each run's own archive.  Returns the manifest
+/// path.  Pure JSON (no HDF5 needed).
+std::string write_campaign(const spec::CampaignArchive& archive);
+
 #ifdef GOSS_HAVE_HDF5
 /// Writes the self-describing HDF5 archive to `path` (creating parent dirs).
 /// Layout:

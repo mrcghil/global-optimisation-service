@@ -275,7 +275,8 @@ add_executable(goss_spec_tests
   tests/spec/test_specs_json.cpp
   tests/spec/test_registry.cpp
   tests/spec/test_executor.cpp
-  tests/spec/test_archive.cpp)
+  tests/spec/test_archive.cpp
+  tests/spec/test_manifest.cpp)
 target_include_directories(goss_spec_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(goss_spec_tests PRIVATE
   goss_spec goss_sim_impl goss_model goss_transcription goss_nlp goss_ad goss_ad_impl
