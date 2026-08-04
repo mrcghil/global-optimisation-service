@@ -1,0 +1,136 @@
+{
+  "axes": [
+    {
+      "parameter": "arrival_rate",
+      "values": [
+        1.0,
+        2.0,
+        3.0
+      ]
+    },
+    {
+      "parameter": "cost_weight",
+      "values": [
+        0.05,
+        0.1,
+        0.5
+      ]
+    }
+  ],
+  "combinator": "product",
+  "label": "arrival_x_cost",
+  "num_runs": 9,
+  "num_succeeded": 9,
+  "problem": "queue",
+  "runs": [
+    {
+      "label": "",
+      "objective": 15.72472013612347,
+      "parameters": {
+        "arrival_rate": 1.0,
+        "cost_weight": 0.05
+      },
+      "problem": "queue",
+      "run_id": "6c159ec6b7e64a87",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 18.887875755030645,
+      "parameters": {
+        "arrival_rate": 1.0,
+        "cost_weight": 0.1
+      },
+      "problem": "queue",
+      "run_id": "3c9d417c1c25dbc7",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 41.66666666946636,
+      "parameters": {
+        "arrival_rate": 1.0,
+        "cost_weight": 0.5
+      },
+      "problem": "queue",
+      "run_id": "6e50e56c583d273b",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 21.142902959223896,
+      "parameters": {
+        "arrival_rate": 2.0,
+        "cost_weight": 0.05
+      },
+      "problem": "queue",
+      "run_id": "623784d9cfde5472",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 25.568290037434856,
+      "parameters": {
+        "arrival_rate": 2.0,
+        "cost_weight": 0.1
+      },
+      "problem": "queue",
+      "run_id": "7622998c4aeeefe8",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 54.16666667225294,
+      "parameters": {
+        "arrival_rate": 2.0,
+        "cost_weight": 0.5
+      },
+      "problem": "queue",
+      "run_id": "17b54085d4f99344",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 31.04288410932616,
+      "parameters": {
+        "arrival_rate": 3.0,
+        "cost_weight": 0.05
+      },
+      "problem": "queue",
+      "run_id": "b43b8eaba41146f9",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 36.666666269198,
+      "parameters": {
+        "arrival_rate": 3.0,
+        "cost_weight": 0.1
+      },
+      "problem": "queue",
+      "run_id": "2dc39dbf84cab875",
+      "status": "Success",
+      "version": "v1"
+    },
+    {
+      "label": "",
+      "objective": 66.66666667097509,
+      "parameters": {
+        "arrival_rate": 3.0,
+        "cost_weight": 0.5
+      },
+      "problem": "queue",
+      "run_id": "40c30b1feeb17701",
+      "status": "Success",
+      "version": "v1"
+    }
+  ],
+  "version": "v1"
+}

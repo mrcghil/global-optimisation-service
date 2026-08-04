@@ -258,7 +258,8 @@ add_library(goss_spec STATIC
   src/spec/specs.cpp
   src/spec/json.cpp
   src/spec/executor.cpp
-  src/sim/archive.cpp)
+  src/sim/archive.cpp
+  src/sim/dashboard_export.cpp)
 target_include_directories(goss_spec PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(goss_spec
   PUBLIC goss_sim_impl goss_model goss_transcription goss_nlp goss_ad
@@ -283,7 +284,21 @@ target_link_libraries(goss_spec_tests PRIVATE
   goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
   nlohmann_json::nlohmann_json
   $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+if(HDF5_FOUND)
+  target_sources(goss_spec_tests PRIVATE tests/spec/test_dashboard_export.cpp)
+endif()
 gtest_discover_tests(goss_spec_tests)
+
+# Dashboard static exporter (standalone tool) — only meaningful with HDF5, since
+# it reads run trajectories from the .h5 archives.
+if(HDF5_FOUND)
+  add_executable(goss_dashboard_export tools/dashboard_export/main.cpp)
+  target_link_libraries(goss_dashboard_export PRIVATE
+    goss_spec goss_sim_impl goss_model goss_transcription goss_nlp goss_ad goss_ad_impl
+    goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
+    nlohmann_json::nlohmann_json
+    $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
+endif()
 
 # ---- Benchmark harness layer ----
 add_library(goss_bench INTERFACE)

@@ -1,0 +1,39 @@
+{
+  "campaigns": [
+    {
+      "name": "queue study",
+      "num_runs": 9,
+      "num_succeeded": 9,
+      "num_sweeps": 1,
+      "slug": "queue_study"
+    }
+  ],
+  "sweeps": [
+    {
+      "axes": [
+        {
+          "parameter": "arrival_rate",
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        },
+        {
+          "parameter": "cost_weight",
+          "values": [
+            0.05,
+            0.1,
+            0.5
+          ]
+        }
+      ],
+      "label": "arrival_x_cost",
+      "num_runs": 9,
+      "num_succeeded": 9,
+      "problem": "queue",
+      "slug": "queue_study__arrival_x_cost",
+      "version": "v1"
+    }
+  ]
+}

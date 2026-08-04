@@ -15,3 +15,8 @@ build/
 # Public docs site (open_docs) build output
 open_docs/node_modules/
 open_docs/dist/
+
+# Dashboard: generated binary run store (HDF5); JSON fixtures under data/ are kept
+dashboard/sample-data/results/
+dashboard/node_modules/
+dashboard/dist/
