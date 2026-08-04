@@ -11,6 +11,32 @@ FetchContent_Declare(googletest
   GIT_TAG v1.14.0)
 FetchContent_MakeAvailable(googletest)
 
+# nlohmann/json — header-only; backs goss::spec (de)serialization. Available on
+# every host (no system dependency).
+FetchContent_Declare(nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# HDF5 (optional) — the self-describing single-run archive.  When the system
+# libhdf5 is present we fetch HighFive (header-only C++ wrapper) and define
+# GOSS_HAVE_HDF5; otherwise the archive's HDF5 body is compiled out and only the
+# JSON sidecar + path helpers remain, so the rest of goss builds everywhere.
+find_package(HDF5 QUIET COMPONENTS C)
+if(HDF5_FOUND)
+  message(STATUS "HDF5 found (${HDF5_VERSION}); enabling HighFive archive support.")
+  set(HIGHFIVE_USE_BOOST OFF CACHE BOOL "" FORCE)
+  set(HIGHFIVE_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+  set(HIGHFIVE_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(HIGHFIVE_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(highfive
+    GIT_REPOSITORY https://github.com/BlueBrain/HighFive.git
+    GIT_TAG v2.9.0)
+  FetchContent_MakeAvailable(highfive)
+else()
+  message(STATUS "HDF5 not found; archive limited to JSON sidecar (no .h5).")
+endif()
+
 find_path(CPPAD_INCLUDE_DIR cppad/cppad.hpp
   HINTS $ENV{CPPAD_HOME}/include /usr/include /usr/local/include /opt/homebrew/include)
 find_path(CPPADCG_INCLUDE_DIR cppad/cg.hpp
@@ -223,6 +249,40 @@ gtest_discover_tests(goss_sim_tests
 gtest_discover_tests(goss_sim_tests
   TEST_FILTER SweepParallel.MatchesSerialResultsInOrder
   PROPERTIES RUN_SERIAL TRUE)
+
+# ---- Spec / config + executor layer ----
+# Typed Run/Sweep/Campaign specs (JSON-serializable), the problem registry, and
+# the executor that reuses the sim sweep machinery.  Depends on goss_sim_impl for
+# make_grid / run_sweep_parallel and on the model/solver layers via the executor.
+add_library(goss_spec STATIC
+  src/spec/specs.cpp
+  src/spec/json.cpp
+  src/spec/executor.cpp
+  src/sim/archive.cpp)
+target_include_directories(goss_spec PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(goss_spec
+  PUBLIC goss_sim_impl goss_model goss_transcription goss_nlp goss_ad
+         nlohmann_json::nlohmann_json
+  PRIVATE goss_solver goss_ipopt_iface goss_nlopt_iface)
+# The HDF5 body of src/sim/archive.cpp is gated on GOSS_HAVE_HDF5; link HighFive
+# and propagate the define only when the system libhdf5 was found.
+if(HDF5_FOUND)
+  target_compile_definitions(goss_spec PUBLIC GOSS_HAVE_HDF5)
+  target_link_libraries(goss_spec PUBLIC HighFive)
+endif()
+
+add_executable(goss_spec_tests
+  tests/spec/test_specs_json.cpp
+  tests/spec/test_registry.cpp
+  tests/spec/test_executor.cpp
+  tests/spec/test_archive.cpp)
+target_include_directories(goss_spec_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_spec_tests PRIVATE
+  goss_spec goss_sim_impl goss_model goss_transcription goss_nlp goss_ad goss_ad_impl
+  goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
+  nlohmann_json::nlohmann_json
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+gtest_discover_tests(goss_spec_tests)
 
 # ---- Benchmark harness layer ----
 add_library(goss_bench INTERFACE)

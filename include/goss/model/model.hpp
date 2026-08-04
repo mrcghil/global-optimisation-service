@@ -89,6 +89,12 @@ class Model {
 
     std::size_t num_parameters() const { return parameter_specs_.size(); }
 
+    const std::string& parameter_name(std::size_t index) const {
+        if (index >= parameter_specs_.size())
+            throw ModelError("Model::parameter_name: index out of range");
+        return parameter_specs_[index].name;
+    }
+
     /// Returns a ParameterValidator built from the currently declared parameters.
     /// The validator checks size, NaN, and per-parameter bounds, throwing ModelError
     /// with a message that names the offending parameter and its bound.

@@ -1,0 +1,149 @@
+// tests/spec/test_specs_json.cpp
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+#include "goss/spec/errors.hpp"
+#include "goss/spec/json.hpp"
+#include "goss/spec/specs.hpp"
+
+namespace {
+
+goss::spec::RunSpec make_queue_run() {
+    goss::spec::RunSpec run;
+    run.problem = {"queue", "v1"};
+    run.parameters = {{"arrival_rate", 2.0}, {"cost_weight", 0.1}};
+    run.discretization.scheme = "hermite_simpson";
+    run.discretization.t_initial = 0.0;
+    run.discretization.t_final = 5.0;
+    run.discretization.num_intervals = 25;
+    run.solver.kind = "ipopt";
+    run.solver.tolerance = 1e-8;
+    run.storage.root = "/tmp/goss";
+    run.image_pipeline = "trajectory_overlay";
+    run.label = "baseline";
+    return run;
+}
+
+}  // namespace
+
+TEST(SpecJson, RunSpecRoundTrips) {
+    const goss::spec::RunSpec original = make_queue_run();
+    const nlohmann::json j = original;
+    const auto restored = j.get<goss::spec::RunSpec>();
+
+    EXPECT_EQ(restored.problem, original.problem);
+    EXPECT_EQ(restored.parameters, original.parameters);
+    EXPECT_EQ(restored.discretization.scheme, original.discretization.scheme);
+    EXPECT_EQ(restored.discretization.num_intervals, original.discretization.num_intervals);
+    EXPECT_EQ(restored.solver.kind, original.solver.kind);
+    EXPECT_EQ(restored.storage.root, original.storage.root);
+    EXPECT_EQ(restored.image_pipeline, original.image_pipeline);
+    EXPECT_EQ(restored.label, original.label);
+}
+
+TEST(SpecJson, CampaignRoundTrips) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    sweep.axes = {{"arrival_rate", {1.0, 2.0, 3.0}}, {"cost_weight", {0.05, 0.1, 0.5}}};
+    sweep.label = "arrival_x_cost";
+    goss::spec::CampaignSpec campaign;
+    campaign.name = "queue_study";
+    campaign.sweeps = {sweep};
+
+    const nlohmann::json j = campaign;
+    const auto restored = j.get<goss::spec::CampaignSpec>();
+    ASSERT_EQ(restored.sweeps.size(), 1u);
+    EXPECT_EQ(restored.name, "queue_study");
+    EXPECT_EQ(restored.sweeps[0].axes.size(), 2u);
+    EXPECT_EQ(restored.sweeps[0].axes[0].parameter, "arrival_rate");
+    EXPECT_EQ(restored.sweeps[0].axes[1].values.size(), 3u);
+}
+
+TEST(SpecIdentity, RunIdIsStableAndVolatileFieldsExcluded) {
+    const goss::spec::RunSpec a = make_queue_run();
+    goss::spec::RunSpec b = a;
+    b.storage.root = "/some/other/place";
+    b.label = "different label";
+    b.image_pipeline = "other_pipeline";
+
+    // Volatile fields must NOT change identity.
+    EXPECT_EQ(goss::spec::run_id(a), goss::spec::run_id(b));
+
+    // A meaningful change (a parameter value) MUST change identity.
+    goss::spec::RunSpec c = a;
+    c.parameters["arrival_rate"] = 2.5;
+    EXPECT_NE(goss::spec::run_id(a), goss::spec::run_id(c));
+
+    // A discretization change MUST change identity.
+    goss::spec::RunSpec d = a;
+    d.discretization.num_intervals = 40;
+    EXPECT_NE(goss::spec::run_id(a), goss::spec::run_id(d));
+
+    // 16 lowercase hex chars.
+    EXPECT_EQ(goss::spec::run_id(a).size(), 16u);
+}
+
+TEST(SweepExpand, ProductOverlaysNamedAxes) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    sweep.combinator = "product";
+    sweep.axes = {{"arrival_rate", {1.0, 2.0, 3.0}}, {"cost_weight", {0.05, 0.1, 0.5}}};
+
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 9u);
+
+    // Axis 0 varies slowest (row-major, matching make_grid).
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("cost_weight"), 0.1);
+    EXPECT_DOUBLE_EQ(runs[3].parameters.at("arrival_rate"), 2.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 3.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+
+    // Non-axis base fields are carried through unchanged.
+    EXPECT_EQ(runs.back().problem.name, "queue");
+    EXPECT_EQ(runs.back().discretization.num_intervals, 25u);
+}
+
+TEST(SweepExpand, ZipPairsIndexWise) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    sweep.combinator = "zip";
+    sweep.axes = {{"arrival_rate", {1.0, 2.0, 3.0}}, {"cost_weight", {0.05, 0.1, 0.5}}};
+
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 3u);
+    EXPECT_DOUBLE_EQ(runs[0].parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs[0].parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs[2].parameters.at("arrival_rate"), 3.0);
+    EXPECT_DOUBLE_EQ(runs[2].parameters.at("cost_weight"), 0.5);
+}
+
+TEST(SweepExpand, ZipRejectsUnequalLengths) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    sweep.combinator = "zip";
+    sweep.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.05}}};
+    EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
+}
+
+TEST(SweepExpand, RejectsUnknownCombinatorAndEmptyAxis) {
+    goss::spec::SweepSpec bad_combinator;
+    bad_combinator.base = make_queue_run();
+    bad_combinator.combinator = "cross";
+    bad_combinator.axes = {{"arrival_rate", {1.0}}};
+    EXPECT_THROW(bad_combinator.expand(), goss::spec::SpecError);
+
+    goss::spec::SweepSpec empty_axis;
+    empty_axis.base = make_queue_run();
+    empty_axis.axes = {{"arrival_rate", {}}};
+    EXPECT_THROW(empty_axis.expand(), goss::spec::SpecError);
+}
+
+TEST(SweepExpand, NoAxesYieldsBaseRun) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 1u);
+    EXPECT_EQ(runs[0].parameters, sweep.base.parameters);
+}
