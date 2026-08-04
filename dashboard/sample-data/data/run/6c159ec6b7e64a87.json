@@ -1,14 +1,14 @@
 {
   "diagnosis": {
     "advice": "",
-    "ok": false,
-    "summary": ""
+    "ok": true,
+    "summary": "Solver converged."
   },
   "problem": "queue",
   "provenance": {
-    "created_utc": "2026-08-04T15:37:48Z",
+    "created_utc": "2026-08-04T15:45:47Z",
     "goss_version": "",
-    "hostname": "998dd964ef99",
+    "hostname": "7280532f01a8",
     "scheme": "hermite_simpson"
   },
   "result": {

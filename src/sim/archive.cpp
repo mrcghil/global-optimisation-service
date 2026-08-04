@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "goss/bench/benchmark_result.hpp"  // solver_status_name
+#include "goss/sim/diagnostics.hpp"  // diagnose (recomputed on read)
 #include "goss/sim/errors.hpp"
 #include "goss/spec/json.hpp"
 
@@ -297,6 +298,9 @@ spec::RunArchive read_run_archive(const std::string& path) {
                 archive.trajectory.controls.push_back(std::move(series));
             }
         }
+        // Diagnosis is derived from the result, not stored — recompute it so a
+        // reloaded archive reports the same status-based summary as the original.
+        archive.diagnosis = diagnose(archive.result);
         return archive;
     } catch (const HighFive::Exception& e) {
         throw SimError(std::string("read_run_archive: HDF5 error: ") + e.what());

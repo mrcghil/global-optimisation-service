@@ -20,3 +20,5 @@ open_docs/dist/
 dashboard/sample-data/results/
 dashboard/node_modules/
 dashboard/dist/
+dashboard/.astro/
+dashboard/public/data/
