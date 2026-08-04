@@ -328,7 +328,7 @@ struct LegendreGaussLobatto {
         // Guard: parameters not supported in hp-pseudospectral v1.
         // compile_hp uses the non-parametric backend (single-argument constructor),
         // so a problem with num_parameters > 0 would silently ignore parameters,
-        // producing a wrong NLP. Fail loudly here rather than at apply_parameters time.
+        // producing a wrong NLP. Fail loudly here rather than at parameter-injection time.
         if (ocp.num_parameters > 0) {
             throw TranscriptionError(
                 "LegendreGaussLobatto::compile_hp: parameters (num_parameters > 0) are not "

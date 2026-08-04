@@ -296,8 +296,8 @@ SolverResult IpoptSolver::solve(const nlp::NLPProblem& problem,
     // our const& problem is well-formed. Propagates ADError on a size mismatch — a
     // setup error, surfaced (not swallowed) rather than reported as a solve outcome.
     // Only inject when the caller explicitly provides parameters; an empty vector
-    // means "leave the backend's current parameter state unchanged" so that
-    // existing call sites using apply_parameters() before solve() keep working.
+    // means "no solve-time parameters supplied" — the backend retains whatever
+    // was last injected (or its compiled default if never set).
     if (!parameters.empty())
         problem.set_parameters(parameters);
 

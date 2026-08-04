@@ -24,10 +24,11 @@ SweepPoint deserialize_sweep_point(const std::vector<char>& bytes);
 /// Runs ONE parameter point in a freshly forked child process.
 ///
 /// The child:
-///   1. Binds the parameter values via apply_parameters (validate + inject).
-///   2. Calls solver.solve(problem, initial_guess).
-///   3. Serializes the resulting SweepPoint to a pipe.
-///   4. Calls ::_exit(0) — skipping atexit handlers and global/static
+///   1. Validates and solves atomically via solve_with_parameters
+///      (ModelError from validation and solver failures are both caught and
+///      recorded as Failure points — the parent is never thrown at).
+///   2. Serializes the resulting SweepPoint to a pipe.
+///   3. Calls ::_exit(0) — skipping atexit handlers and global/static
 ///      destructors, thereby avoiding double-flushing of IPOPT/CppADCG
 ///      static state or the JIT temp-dir cleanup still owned by the parent.
 ///

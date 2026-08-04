@@ -203,16 +203,17 @@ WorkerHandle launch_worker(nlp::NLPProblem& problem,
     if (pid == 0) {
         // ---- CHILD ----
         // The compiled .so / GenericModel is inherited copy-on-write — the
-        // child does NOT recompile.  apply_parameters just stores the values;
-        // solver.solve() reads them.  No compile() path is triggered here.
+        // child does NOT recompile.  Validation and solve happen atomically in
+        // solve_with_parameters; no compile() path is triggered here.
         ::close(pipe_fds[0]);  // close read end — child only writes
 
         SweepPoint point;
         point.parameters = parameters;
         try {
-            apply_parameters(problem, validator, parameters);
+            // validate then solve in one call — any ModelError from validation
+            // is caught by the std::exception handler below, same as a solve failure.
             const solver::SolverResult solve_result =
-                solver.solve(problem, initial_guess);
+                solve_with_parameters(solver, problem, validator, initial_guess, parameters);
             point.status          = solve_result.status;
             point.objective_value = solve_result.objective_value;
             point.x               = solve_result.x;

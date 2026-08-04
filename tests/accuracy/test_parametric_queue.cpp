@@ -36,12 +36,12 @@ TEST(ParametricQueue, CompileOnceSolveManyAcrossArrivalRates) {
 
     goss::solver::IpoptSolver solver;
 
-    goss::sim::apply_parameters(*compiled.problem, compiled.validator, {1.0});
-    auto low = solver.solve(*compiled.problem, z0);
+    auto low = goss::sim::solve_with_parameters(
+        solver, *compiled.problem, compiled.validator, z0, {1.0});
     ASSERT_EQ(low.status, goss::solver::SolverStatus::Success);
 
-    goss::sim::apply_parameters(*compiled.problem, compiled.validator, {4.0});
-    auto high = solver.solve(*compiled.problem, z0);
+    auto high = goss::sim::solve_with_parameters(
+        solver, *compiled.problem, compiled.validator, z0, {4.0});
     ASSERT_EQ(high.status, goss::solver::SolverStatus::Success);
 
     // Higher arrival rate => costlier optimum (queue harder to drain).

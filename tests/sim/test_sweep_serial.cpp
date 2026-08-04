@@ -43,10 +43,11 @@ TEST(SweepSerial, SolvesEveryPointAndRecordsResults) {
     EXPECT_EQ(result.points[2].parameters, (std::vector<double>{3.0}));
 }
 
-// Verify that each call to apply_parameters is a clean full re-assignment with
-// no residual state leaking between consecutive grid points.  We place the same
-// arrival_rate value (2.0) in non-adjacent positions (indices 0 and 2) and a
-// distinct value (3.0) in between (index 1), then assert:
+// Verify that each call to solve_with_parameters is a clean full re-assignment
+// (solve-time injection) with no residual state leaking between consecutive
+// grid points.  We place the same arrival_rate value (2.0) in non-adjacent
+// positions (indices 0 and 2) and a distinct value (3.0) in between (index 1),
+// then assert:
 //   - points[0] and points[2] (both 2.0) have identical status AND objective_value
 //   - points[0] and points[1] (2.0 vs 3.0) have distinct objective values
 // If any residual state from point 1 bled into point 2 the objectives at

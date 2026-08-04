@@ -60,18 +60,18 @@ inline SweepResult run_sweep_serial(
         SweepPoint point;
         point.parameters = parameters;
         try {
-            apply_parameters(problem, validator, parameters);   // validate + inject
+            // validate then solve in one call — validation failure surfaces before
+            // any (expensive) solver work is done.
+            const solver::SolverResult solve_result =
+                solve_with_parameters(solver, problem, validator, initial_guess, parameters);
+            point.status = solve_result.status;
+            point.objective_value = solve_result.objective_value;
+            point.x = solve_result.x;
+            point.message = solve_result.message;
         } catch (const model::ModelError& validation_error) {
             point.status = solver::SolverStatus::Failure;
-            point.message = validation_error.what();            // explicit, names param
-            result.points.push_back(std::move(point));
-            continue;
+            point.message = validation_error.what();  // explicit, names param
         }
-        const solver::SolverResult solve_result = solver.solve(problem, initial_guess);
-        point.status = solve_result.status;
-        point.objective_value = solve_result.objective_value;
-        point.x = solve_result.x;
-        point.message = solve_result.message;
         result.points.push_back(std::move(point));
     }
     return result;
