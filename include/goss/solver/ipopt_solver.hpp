@@ -32,8 +32,11 @@ class IpoptSolver : public Solver {
     ///
     /// Convergence outcomes (including non-convergence) are reported via the
     /// returned SolverResult::status.  Only setup/usage errors throw SolverError.
+    /// parameters is injected once at the top of solve(); omit or pass {} for
+    /// problems with no parameters.
     SolverResult solve(const nlp::NLPProblem& problem,
-                       const std::vector<double>& initial_guess) override;
+                       const std::vector<double>& initial_guess,
+                       const std::vector<double>& parameters = {}) override;
 
  private:
     double tolerance_     = 1e-8;

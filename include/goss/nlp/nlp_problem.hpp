@@ -34,7 +34,10 @@ class NLPProblem {
 
     /// Injects the parameter vector for subsequent evaluations. Forwards to the
     /// backend; propagates ADError on size mismatch.
-    void set_parameters(const std::vector<double>& parameter_values);
+    /// Declared const so a solver holding a const NLPProblem& can inject
+    /// parameters before evaluations; the mutation reaches the backend through
+    /// the unique_ptr member, which is not itself const.
+    void set_parameters(const std::vector<double>& parameter_values) const;
 
     const std::vector<double>& variable_lower_bounds() const { return variable_lower_bounds_; }
     const std::vector<double>& variable_upper_bounds() const { return variable_upper_bounds_; }

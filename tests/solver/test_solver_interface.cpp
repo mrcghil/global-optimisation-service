@@ -10,7 +10,8 @@ namespace {
 class StubSolver : public goss::solver::Solver {
  public:
     goss::solver::SolverResult solve(const goss::nlp::NLPProblem&,
-                                     const std::vector<double>& initial_guess) override {
+                                     const std::vector<double>& initial_guess,
+                                     const std::vector<double>& /*parameters*/ = {}) override {
         goss::solver::SolverResult result;
         result.status = goss::solver::SolverStatus::Success;
         result.x = initial_guess;

@@ -24,6 +24,7 @@
 #include "goss/solver/nlopt_solver.hpp"
 #include "goss/solver/errors.hpp"
 #include "goss/nlp/nlp_problem.hpp"
+#include "goss/ad/errors.hpp"
 
 namespace goss::solver {
 
@@ -201,7 +202,8 @@ std::string nlopt_result_message(nlopt::result code) {
 // ---------------------------------------------------------------------------
 
 SolverResult NloptSolver::solve(const nlp::NLPProblem& problem,
-                                const std::vector<double>& initial_guess) {
+                                const std::vector<double>& initial_guess,
+                                const std::vector<double>& parameters) {
     if (initial_guess.size() != problem.num_variables()) {
         throw SolverError(
             "NloptSolver::solve: initial_guess size (" +
@@ -209,6 +211,16 @@ SolverResult NloptSolver::solve(const nlp::NLPProblem& problem,
             ") does not match problem.num_variables() (" +
             std::to_string(problem.num_variables()) + ")");
     }
+
+    // Inject solve-time parameters once; constant across all evaluation callbacks.
+    // set_parameters is const (backend reached via unique_ptr), so injecting through
+    // our const& problem is well-formed. Propagates ADError on a size mismatch — a
+    // setup error, surfaced (not swallowed) rather than reported as a solve outcome.
+    // Only inject when the caller explicitly provides parameters; an empty vector
+    // means "leave the backend's current parameter state unchanged" so that
+    // existing call sites using apply_parameters() before solve() keep working.
+    if (!parameters.empty())
+        problem.set_parameters(parameters);
 
     const auto n = static_cast<unsigned>(problem.num_variables());
 

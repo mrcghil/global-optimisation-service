@@ -62,7 +62,7 @@ std::size_t NLPProblem::num_parameters() const {
     return backend_->num_parameters();
 }
 
-void NLPProblem::set_parameters(const std::vector<double>& parameter_values) {
+void NLPProblem::set_parameters(const std::vector<double>& parameter_values) const {
     backend_->set_parameters(parameter_values);
 }
 

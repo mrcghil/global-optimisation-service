@@ -15,11 +15,13 @@ class Solver {
     Solver(Solver&&) = delete;
     Solver& operator=(Solver&&) = delete;
 
-    /// Solve the problem from initial_guess. Solve OUTCOMES (including
-    /// non-convergence) are reported via the returned SolverResult.status;
-    /// only setup/usage errors throw (SolverError).
+    /// Solve the problem from initial_guess. parameters (empty by default) is
+    /// injected into the problem's AD backend ONCE before solving and stays
+    /// constant across the solver's iterations; only setup/usage errors throw
+    /// (SolverError, or ADError on a parameter size mismatch).
     virtual SolverResult solve(const nlp::NLPProblem& problem,
-                               const std::vector<double>& initial_guess) = 0;
+                               const std::vector<double>& initial_guess,
+                               const std::vector<double>& parameters = {}) = 0;
 
  protected:
     Solver() = default;
