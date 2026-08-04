@@ -423,7 +423,7 @@ class CppADCGBackend : public ADBackend {
     /// eval_hessian calls.  The values are stored in parameter_values_ and
     /// spliced into the tail of the combined vector at each call.
     /// Throws ADError if parameter_values.size() != parameter_size_.
-    void set_parameters(const std::vector<double>& parameter_values) override {
+    void set_parameters(const std::vector<double>& parameter_values) const override {
         if (parameter_values.size() != parameter_size_) {
             throw ADError(
                 "set_parameters: expected " + std::to_string(parameter_size_) +
@@ -573,7 +573,9 @@ class CppADCGBackend : public ADBackend {
     std::size_t parameter_size_ = 0;
     /// Current parameter values; size == parameter_size_.  Empty for
     /// non-parametric backends.  Updated by set_parameters().
-    std::vector<double> parameter_values_;
+    /// Declared mutable so the const set_parameters() method can write to it
+    /// without losing the const qualifier on the public interface.
+    mutable std::vector<double> parameter_values_;
     detail::CompiledModel compiled_;
     SparsityPattern jacobian_sparsity_;
     SparsityPattern hessian_sparsity_;

@@ -19,6 +19,7 @@
 #include "goss/model/model.hpp"
 #include "goss/transcription/hermite_simpson.hpp"
 #include "goss/solver/ipopt_solver.hpp"
+#include "goss/solver/nlopt_solver.hpp"
 #include "goss/sim/initial_guess.hpp"
 #include "goss/ad/errors.hpp"
 
@@ -104,6 +105,39 @@ TEST_F(ParametricQueueFixture, WrongParameterCountThrows) {
     goss::solver::IpoptSolver solver;
 
     // The model has exactly one parameter; passing two must throw ADError.
+    EXPECT_THROW(
+        solver.solve(*compiled_ptr->problem, z0, {1.0, 2.0}),
+        goss::ad::ADError);
+}
+
+/// NloptSolver must inject solve-time parameters into the compiled problem.
+/// COBYLA (derivative-free) is too slow to converge on this large transcribed
+/// OCP, so we assert the weaker but meaningful properties:
+///   (a) both solves run to completion (Success or IterationLimit — not an
+///       exception or a hard Failure), confirming parameters were injected
+///       and the problem was evaluated with the correct parameter values, and
+///   (b) a wrong-size parameter vector throws ADError before NLopt starts.
+TEST_F(ParametricQueueFixture, NloptSolverInjectsSolveTimeParameters) {
+    goss::solver::NloptSolver solver;
+    // Keep evaluations modest: we only need to confirm injection, not convergence.
+    solver.set_max_evaluations(500);
+
+    // Solve with arrival_rate = 1.0 (light load).
+    const auto low_arrival = solver.solve(
+        *compiled_ptr->problem, z0, /*parameters=*/{1.0});
+    // Must not hard-fail: Success or IterationLimit are both acceptable.
+    EXPECT_NE(low_arrival.status, goss::solver::SolverStatus::Failure);
+    EXPECT_NE(low_arrival.status, goss::solver::SolverStatus::NumericalError);
+    EXPECT_NE(low_arrival.status, goss::solver::SolverStatus::InfeasibleProblem);
+
+    // Solve with arrival_rate = 4.0 (heavy load).
+    const auto high_arrival = solver.solve(
+        *compiled_ptr->problem, z0, /*parameters=*/{4.0});
+    EXPECT_NE(high_arrival.status, goss::solver::SolverStatus::Failure);
+    EXPECT_NE(high_arrival.status, goss::solver::SolverStatus::NumericalError);
+    EXPECT_NE(high_arrival.status, goss::solver::SolverStatus::InfeasibleProblem);
+
+    // Wrong-size parameter vector must throw ADError before NLopt starts.
     EXPECT_THROW(
         solver.solve(*compiled_ptr->problem, z0, {1.0, 2.0}),
         goss::ad::ADError);

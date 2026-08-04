@@ -48,7 +48,7 @@ class ADBackend {
     /// Injects the parameter vector for all subsequent eval/jacobian/hessian
     /// calls. Throws ADError if parameter_values.size() != num_parameters().
     /// Default: accepts only an empty vector (no parameters).
-    virtual void set_parameters(const std::vector<double>& parameter_values) {
+    virtual void set_parameters(const std::vector<double>& parameter_values) const {
         if (!parameter_values.empty())
             throw ADError("set_parameters: backend has no parameters but " +
                           std::to_string(parameter_values.size()) + " were provided");
