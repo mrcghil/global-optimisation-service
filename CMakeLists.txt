@@ -328,6 +328,18 @@ target_link_libraries(goss_config_tests PRIVATE
   $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
 gtest_discover_tests(goss_config_tests)
 
+# ---- YAML sweep runner (standalone tool) ----
+# Loads a YAML campaign and runs it end-to-end: manifests always, dashboard JSON
+# when HDF5 is available.  Includes the shared queue-model builder header.
+add_executable(goss_run_sweep tools/run_sweep/main.cpp)
+target_include_directories(goss_run_sweep PRIVATE
+  ${CMAKE_SOURCE_DIR}/tools/dashboard_export)
+target_link_libraries(goss_run_sweep PRIVATE
+  goss_config goss_spec goss_sim_impl goss_model goss_transcription goss_nlp
+  goss_ad goss_ad_impl goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
+  nlohmann_json::nlohmann_json
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
+
 # ---- Benchmark harness layer ----
 add_library(goss_bench INTERFACE)
 target_include_directories(goss_bench INTERFACE ${CMAKE_SOURCE_DIR}/include)
