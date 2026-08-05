@@ -7,38 +7,12 @@
 #include <utility>
 #include <vector>
 
-#include "goss/model/model.hpp"
 #include "goss/sim/archive.hpp"
 #include "goss/sim/dashboard_export.hpp"
-#include "goss/spec/compile_dispatch.hpp"
 #include "goss/spec/executor.hpp"
-#include "goss/spec/registry.hpp"
+#include "queue_model.hpp"
 
 using namespace goss;
-
-static spec::BuiltProblem build_queue(const spec::DiscretizationSpec& d) {
-    model::Model m;
-    auto q = m.add_state("queue_length");
-    auto r = m.add_control("service_rate");
-    m.add_parameter("arrival_rate", 2.0, 0.0, 10.0);
-    m.add_parameter("cost_weight", 0.1, 0.0, 10.0);
-    m.set_state_bounds(q, 0.0, 1e19);
-    m.set_control_bounds(r, 0.0, 5.0);
-    m.set_initial_state(q, 10.0);
-    m.set_mesh(d.t_initial, d.t_final, d.num_intervals);
-    auto ocp = m.build(
-        [](const auto& x, const auto& u, const auto& p, auto) {
-            using T = std::decay_t<decltype(x[0])>;
-            return std::vector<T>{p[0] - u[0]};
-        },
-        [](const auto& x, const auto& u, const auto& p, auto) {
-            using T = std::decay_t<decltype(x[0])>;
-            return x[0] + p[1] * u[0] * u[0];
-        });
-    auto c = spec::compile_dispatch(ocp, d, "gensample_" + std::to_string(d.num_intervals));
-    auto mesh = ocp.mesh;
-    return spec::BuiltProblem{std::move(m), std::move(c), mesh, d.scheme};
-}
 
 int main(int argc, char** argv) {
     const std::string base_dir = argc > 1 ? argv[1] : "dashboard/sample-data";
@@ -46,7 +20,7 @@ int main(int argc, char** argv) {
     const std::string data = base_dir + "/data";
 
     spec::ProblemRegistry reg;
-    reg.register_problem({"queue", "v1"}, build_queue);
+    reg.register_problem({"queue", "v1"}, goss_tools::build_queue);
 
     spec::RunSpec base;
     base.problem = {"queue", "v1"};
