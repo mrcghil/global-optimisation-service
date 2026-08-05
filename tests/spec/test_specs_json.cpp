@@ -147,3 +147,124 @@ TEST(SweepExpand, NoAxesYieldsBaseRun) {
     ASSERT_EQ(runs.size(), 1u);
     EXPECT_EQ(runs[0].parameters, sweep.base.parameters);
 }
+
+TEST(SweepExpandGroups, ZipsWithinGroupAndProductsAcrossGroups) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    // Group 0: two axes changing together (zip), length 2.
+    // Group 1: one axis of length 3.  Expect 2 * 3 = 6 runs.
+    goss::spec::AxisGroup group_zip;
+    group_zip.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1, 0.2}}};
+    goss::spec::AxisGroup group_single;
+    group_single.axes = {{"cost_weight", {0.05, 0.1, 0.5}}};
+    sweep.groups = {group_zip, group_single};
+
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 6u);
+    // Group 0 varies slowest (its two axes move together); group 1 varies fastest.
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("cost_weight"), 0.1);
+    EXPECT_DOUBLE_EQ(runs[3].parameters.at("arrival_rate"), 2.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 2.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+
+    // "Last group wins": both groups name cost_weight.  Group 1 is processed
+    // after group 0, so its value overwrites group 0's zipped value.
+    // runs[3] is (group0=row1, group1=row0): group0 sets cost_weight=0.2,
+    // then group1 overwrites with 0.05.  Verify group1's value prevails.
+    EXPECT_DOUBLE_EQ(runs[3].parameters.at("cost_weight"), 0.05);
+}
+
+TEST(SweepExpandGroups, RejectsUnequalLengthAxesWithinGroup) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup bad;
+    bad.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1}}};
+    sweep.groups = {bad};
+    EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
+}
+
+TEST(SweepExpandGroups, SingleAxisGroupsReproduceProductGrid) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup g0; g0.axes = {{"arrival_rate", {1.0, 2.0, 3.0}}};
+    goss::spec::AxisGroup g1; g1.axes = {{"cost_weight", {0.05, 0.1, 0.5}}};
+    sweep.groups = {g0, g1};
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 9u);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 3.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+}
+
+TEST(SweepExpandGroups, RejectsEmptyAxisWithinGroup) {
+    // A non-first axis in a group with empty values should produce a clear
+    // SpecError naming the offending parameter, not an equal-length mismatch.
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup bad;
+    // First axis is valid; second axis has no values — this is the case that
+    // previously produced a misleading "axes in a group must be equal length" error.
+    bad.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {}}};
+    sweep.groups = {bad};
+    EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
+}
+
+TEST(SpecJson, GroupsRoundTrip) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup group;
+    group.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1, 0.2}}};
+    sweep.groups = {group};
+    sweep.label = "grouped";
+
+    const nlohmann::json j = sweep;
+    const auto restored = j.get<goss::spec::SweepSpec>();
+    ASSERT_EQ(restored.groups.size(), 1u);
+    ASSERT_EQ(restored.groups[0].axes.size(), 2u);
+    EXPECT_EQ(restored.groups[0].axes[0].parameter, "arrival_rate");
+    EXPECT_EQ(restored.groups[0].axes[1].values.size(), 2u);
+}
+
+TEST(SpecJson, LegacySweepWithoutGroupsStillParses) {
+    // A sweep JSON produced before `groups` existed must still deserialize.
+    nlohmann::json j = {
+        {"base", make_queue_run()},
+        {"axes", {{{"parameter", "arrival_rate"}, {"values", {1.0, 2.0}}}}},
+        {"combinator", "product"},
+        {"label", "legacy"}};
+    const auto restored = j.get<goss::spec::SweepSpec>();
+    EXPECT_TRUE(restored.groups.empty());
+    ASSERT_EQ(restored.axes.size(), 1u);
+    EXPECT_EQ(restored.combinator, "product");
+}
+
+TEST(SpecJson, SweepFromJsonToleratesMissingLabel) {
+    // Hand-authored JSON that omits the optional "label" field must not throw.
+    nlohmann::json j = {
+        {"base", make_queue_run()},
+        {"axes", {{{"parameter", "arrival_rate"}, {"values", {1.0, 2.0}}}}},
+        {"combinator", "product"}};
+    // Verify "label" is absent (defensive: ensure the test is meaningful).
+    ASSERT_FALSE(j.contains("label"));
+    goss::spec::SweepSpec restored;
+    ASSERT_NO_THROW(restored = j.get<goss::spec::SweepSpec>());
+    EXPECT_TRUE(restored.label.empty());
+}
+
+TEST(SpecJson, RunFromJsonToleratesMissingLabelAndImagePipeline) {
+    // Hand-authored JSON that omits the optional "label" and "image_pipeline"
+    // fields must not throw; both should default to empty strings.
+    nlohmann::json j = make_queue_run();
+    j.erase("label");
+    j.erase("image_pipeline");
+    ASSERT_FALSE(j.contains("label"));
+    ASSERT_FALSE(j.contains("image_pipeline"));
+    goss::spec::RunSpec restored;
+    ASSERT_NO_THROW(restored = j.get<goss::spec::RunSpec>());
+    EXPECT_TRUE(restored.label.empty());
+    EXPECT_TRUE(restored.image_pipeline.empty());
+}

@@ -8,6 +8,79 @@
 namespace goss::spec {
 
 std::vector<RunSpec> SweepSpec::expand() const {
+    // Preferred path: grouped axes (zip within a group, product across groups).
+    if (!groups.empty()) {
+        // Each group zips its axes into a list of per-combination rows, and
+        // contributes one "meta-axis" whose entries are those rows. We then take
+        // the cartesian product of the groups' row-indices via make_grid.
+        std::vector<std::vector<std::vector<double>>> group_rows;  // group -> rows -> axis values
+        std::vector<std::vector<std::string>> group_param_names;   // group -> axis parameter names
+        group_rows.reserve(groups.size());
+        group_param_names.reserve(groups.size());
+
+        for (const AxisGroup& group : groups) {
+            if (group.axes.empty())
+                throw SpecError("SweepSpec::expand: an axis group is empty");
+            const std::size_t length = group.axes.front().values.size();
+            std::vector<std::string> names;
+            names.reserve(group.axes.size());
+            for (const Axis& axis : group.axes) {
+                // Check every axis individually so the error names the offending
+                // parameter, matching the style of the legacy path's empty-axis message.
+                if (axis.values.empty())
+                    throw SpecError("SweepSpec::expand: axis '" + axis.parameter +
+                                    "' is empty");
+                if (axis.values.size() != length)
+                    throw SpecError(
+                        "SweepSpec::expand: axes in a group must be equal length");
+                names.push_back(axis.parameter);
+            }
+            std::vector<std::vector<double>> rows;
+            rows.reserve(length);
+            for (std::size_t row = 0; row < length; ++row) {
+                std::vector<double> values;
+                values.reserve(group.axes.size());
+                for (const Axis& axis : group.axes) values.push_back(axis.values[row]);
+                rows.push_back(std::move(values));
+            }
+            group_rows.push_back(std::move(rows));
+            group_param_names.push_back(std::move(names));
+        }
+
+        // Build integer index-axes (one entry per row in each group) and product
+        // them with the shared grid algorithm; group 0 varies slowest.
+        std::vector<std::vector<double>> index_axes;
+        index_axes.reserve(group_rows.size());
+        for (const auto& rows : group_rows) {
+            std::vector<double> indices(rows.size());
+            for (std::size_t i = 0; i < rows.size(); ++i)
+                indices[i] = static_cast<double>(i);
+            index_axes.push_back(std::move(indices));
+        }
+        const std::vector<std::vector<double>> index_combos =
+            goss::sim::make_grid(index_axes);
+
+        std::vector<RunSpec> runs;
+        runs.reserve(index_combos.size());
+        for (const std::vector<double>& index_combo : index_combos) {
+            RunSpec run = base;
+            for (std::size_t g = 0; g < groups.size(); ++g) {
+                const std::size_t row_index =
+                    static_cast<std::size_t>(index_combo[g]);
+                const std::vector<double>& row = group_rows[g][row_index];
+                // Overlay parameters group by group; if two groups name the same
+                // parameter, the later group's value wins ("last group wins").
+                // This is intentional: groups are ordered, and later groups are
+                // considered higher-priority overrides.
+                for (std::size_t a = 0; a < group_param_names[g].size(); ++a)
+                    run.parameters[group_param_names[g][a]] = row[a];
+            }
+            runs.push_back(std::move(run));
+        }
+        return runs;
+    }
+
+    // ---- Legacy path (DEPRECATED, backward-compat only): flat axes + combinator.
     if (axes.empty())
         return {base};  // a degenerate sweep with no axes is just the base run
 

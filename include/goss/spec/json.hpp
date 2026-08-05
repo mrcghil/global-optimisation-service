@@ -24,6 +24,8 @@ void to_json(nlohmann::json& j, const RunSpec& v);
 void from_json(const nlohmann::json& j, RunSpec& v);
 void to_json(nlohmann::json& j, const Axis& v);
 void from_json(const nlohmann::json& j, Axis& v);
+void to_json(nlohmann::json& j, const AxisGroup& v);
+void from_json(const nlohmann::json& j, AxisGroup& v);
 void to_json(nlohmann::json& j, const SweepSpec& v);
 void from_json(const nlohmann::json& j, SweepSpec& v);
 void to_json(nlohmann::json& j, const CampaignSpec& v);

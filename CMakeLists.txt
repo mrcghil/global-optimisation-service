@@ -18,6 +18,16 @@ FetchContent_Declare(nlohmann_json
   GIT_TAG v3.11.3)
 FetchContent_MakeAvailable(nlohmann_json)
 
+# yaml-cpp — backs the goss::config YAML sweep loader. Header+static, fetched at
+# a pinned tag so there is no system dependency (matches the json/gtest pattern).
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml_cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG 0.8.0)
+FetchContent_MakeAvailable(yaml_cpp)
+
 # HDF5 (optional) — the self-describing single-run archive.  When the system
 # libhdf5 is present we fetch HighFive (header-only C++ wrapper) and define
 # GOSS_HAVE_HDF5; otherwise the archive's HDF5 body is compiled out and only the
@@ -301,6 +311,34 @@ if(HDF5_FOUND)
     nlohmann_json::nlohmann_json
     $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
 endif()
+
+# ---- Config / YAML sweep loader ----
+# Parses a YAML campaign (with the !range tag and grouped axes) into a
+# goss::spec::CampaignSpec.  Depends only on the spec types + yaml-cpp.
+add_library(goss_config STATIC src/config/yaml_loader.cpp)
+target_include_directories(goss_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(goss_config PUBLIC goss_spec yaml-cpp::yaml-cpp)
+
+add_executable(goss_config_tests tests/config/test_yaml_loader.cpp)
+target_include_directories(goss_config_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(goss_config_tests PRIVATE
+  goss_config goss_spec goss_sim_impl goss_model goss_transcription goss_nlp
+  goss_ad goss_ad_impl goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
+  nlohmann_json::nlohmann_json
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}> GTest::gtest_main)
+gtest_discover_tests(goss_config_tests)
+
+# ---- YAML sweep runner (standalone tool) ----
+# Loads a YAML campaign and runs it end-to-end: manifests always, dashboard JSON
+# when HDF5 is available.  Includes the shared queue-model builder header.
+add_executable(goss_run_sweep tools/run_sweep/main.cpp)
+target_include_directories(goss_run_sweep PRIVATE
+  ${CMAKE_SOURCE_DIR}/tools/dashboard_export)
+target_link_libraries(goss_run_sweep PRIVATE
+  goss_config goss_spec goss_sim_impl goss_model goss_transcription goss_nlp
+  goss_ad goss_ad_impl goss_solver goss_ipopt_iface goss_nlopt_iface cppadcg
+  nlohmann_json::nlohmann_json
+  $<$<BOOL:${CPPAD_LIB}>:${CPPAD_LIB}>)
 
 # ---- Benchmark harness layer ----
 add_library(goss_bench INTERFACE)
