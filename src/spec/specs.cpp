@@ -22,12 +22,14 @@ std::vector<RunSpec> SweepSpec::expand() const {
             if (group.axes.empty())
                 throw SpecError("SweepSpec::expand: an axis group is empty");
             const std::size_t length = group.axes.front().values.size();
-            if (length == 0)
-                throw SpecError("SweepSpec::expand: axis '" +
-                                group.axes.front().parameter + "' is empty");
             std::vector<std::string> names;
             names.reserve(group.axes.size());
             for (const Axis& axis : group.axes) {
+                // Check every axis individually so the error names the offending
+                // parameter, matching the style of the legacy path's empty-axis message.
+                if (axis.values.empty())
+                    throw SpecError("SweepSpec::expand: axis '" + axis.parameter +
+                                    "' is empty");
                 if (axis.values.size() != length)
                     throw SpecError(
                         "SweepSpec::expand: axes in a group must be equal length");
@@ -66,6 +68,10 @@ std::vector<RunSpec> SweepSpec::expand() const {
                 const std::size_t row_index =
                     static_cast<std::size_t>(index_combo[g]);
                 const std::vector<double>& row = group_rows[g][row_index];
+                // Overlay parameters group by group; if two groups name the same
+                // parameter, the later group's value wins ("last group wins").
+                // This is intentional: groups are ordered, and later groups are
+                // considered higher-priority overrides.
                 for (std::size_t a = 0; a < group_param_names[g].size(); ++a)
                     run.parameters[group_param_names[g][a]] = row[a];
             }

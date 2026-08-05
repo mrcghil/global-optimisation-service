@@ -169,6 +169,12 @@ TEST(SweepExpandGroups, ZipsWithinGroupAndProductsAcrossGroups) {
     EXPECT_DOUBLE_EQ(runs[3].parameters.at("arrival_rate"), 2.0);
     EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 2.0);
     EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+
+    // "Last group wins": both groups name cost_weight.  Group 1 is processed
+    // after group 0, so its value overwrites group 0's zipped value.
+    // runs[3] is (group0=row1, group1=row0): group0 sets cost_weight=0.2,
+    // then group1 overwrites with 0.05.  Verify group1's value prevails.
+    EXPECT_DOUBLE_EQ(runs[3].parameters.at("cost_weight"), 0.05);
 }
 
 TEST(SweepExpandGroups, RejectsUnequalLengthAxesWithinGroup) {
@@ -192,4 +198,17 @@ TEST(SweepExpandGroups, SingleAxisGroupsReproduceProductGrid) {
     EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
     EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 3.0);
     EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+}
+
+TEST(SweepExpandGroups, RejectsEmptyAxisWithinGroup) {
+    // A non-first axis in a group with empty values should produce a clear
+    // SpecError naming the offending parameter, not an equal-length mismatch.
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup bad;
+    // First axis is valid; second axis has no values — this is the case that
+    // previously produced a misleading "axes in a group must be equal length" error.
+    bad.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {}}};
+    sweep.groups = {bad};
+    EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
 }
