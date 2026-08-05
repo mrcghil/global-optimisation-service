@@ -241,3 +241,30 @@ TEST(SpecJson, LegacySweepWithoutGroupsStillParses) {
     ASSERT_EQ(restored.axes.size(), 1u);
     EXPECT_EQ(restored.combinator, "product");
 }
+
+TEST(SpecJson, SweepFromJsonToleratesMissingLabel) {
+    // Hand-authored JSON that omits the optional "label" field must not throw.
+    nlohmann::json j = {
+        {"base", make_queue_run()},
+        {"axes", {{{"parameter", "arrival_rate"}, {"values", {1.0, 2.0}}}}},
+        {"combinator", "product"}};
+    // Verify "label" is absent (defensive: ensure the test is meaningful).
+    ASSERT_FALSE(j.contains("label"));
+    goss::spec::SweepSpec restored;
+    ASSERT_NO_THROW(restored = j.get<goss::spec::SweepSpec>());
+    EXPECT_TRUE(restored.label.empty());
+}
+
+TEST(SpecJson, RunFromJsonToleratesMissingLabelAndImagePipeline) {
+    // Hand-authored JSON that omits the optional "label" and "image_pipeline"
+    // fields must not throw; both should default to empty strings.
+    nlohmann::json j = make_queue_run();
+    j.erase("label");
+    j.erase("image_pipeline");
+    ASSERT_FALSE(j.contains("label"));
+    ASSERT_FALSE(j.contains("image_pipeline"));
+    goss::spec::RunSpec restored;
+    ASSERT_NO_THROW(restored = j.get<goss::spec::RunSpec>());
+    EXPECT_TRUE(restored.label.empty());
+    EXPECT_TRUE(restored.image_pipeline.empty());
+}

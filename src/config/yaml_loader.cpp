@@ -81,6 +81,10 @@ goss::spec::AxisGroup parse_group(const YAML::Node& node) {
 
 void parse_problem(const YAML::Node& node, goss::spec::ProblemKey& key) {
     if (!node) throw SpecError("yaml_loader: run is missing 'problem'");
+    // Give a named error rather than a generic yaml-cpp "bad conversion" message
+    // when a hand-authored config omits either required field.
+    if (!node["name"]) throw SpecError("yaml_loader: problem is missing 'name'");
+    if (!node["version"]) throw SpecError("yaml_loader: problem is missing 'version'");
     key.name = node["name"].as<std::string>();
     key.version = node["version"].as<std::string>();
 }

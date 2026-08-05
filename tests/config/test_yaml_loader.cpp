@@ -150,6 +150,30 @@ sweeps:
     std::remove(path.c_str());
 }
 
+// N3: omitting `version` from `base.problem` must throw a SpecError whose
+// message names the missing field, not a generic yaml-cpp "bad conversion".
+TEST(YamlLoader, MissingProblemVersionGivesNamedError) {
+    const std::string yaml = R"(
+name: t
+sweeps:
+  - label: s
+    base:
+      problem: { name: queue }
+      parameters: { arrival_rate: 2.0 }
+)";
+    const std::string path = write_temp_yaml(yaml);
+    try {
+        goss::config::load_campaign_from_yaml(path);
+        std::remove(path.c_str());
+        FAIL() << "Expected goss::spec::SpecError to be thrown";
+    } catch (const goss::spec::SpecError& e) {
+        std::remove(path.c_str());
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("version"), std::string::npos)
+            << "Error message should name the missing 'version' field; got: " << msg;
+    }
+}
+
 // I-2: an excessively large !range count must throw SpecError before attempting
 // to reserve or allocate the vector.
 TEST(YamlLoader, RangeCountTooLargeThrows) {
