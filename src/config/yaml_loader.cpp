@@ -18,8 +18,15 @@ using goss::spec::SpecError;
 // plain YAML sequence of numbers or the `!range [start, stop, count]` tag, which
 // expands to a `count`-point inclusive linspace (count >= 1; count == 1 yields
 // [start]).
+
+// Maximum allowed !range count; guards against huge allocations on adversarial input.
+constexpr long kMaxRangeCount = 10'000'000;
+
 std::vector<double> resolve_values(const YAML::Node& node) {
     if (!node) throw SpecError("yaml_loader: axis is missing 'values'");
+    // yaml-cpp reports a local YAML tag verbatim as "!range" (not "!<range>",
+    // which is the form used only for non-specific/secondary tags), so a direct
+    // string compare against "!range" is the correct way to detect this tag.
     if (node.Tag() == "!range") {
         if (!node.IsSequence() || node.size() != 3)
             throw SpecError(
@@ -29,6 +36,10 @@ std::vector<double> resolve_values(const YAML::Node& node) {
         const long count = node[2].as<long>();
         if (count < 1)
             throw SpecError("yaml_loader: !range count must be >= 1");
+        if (count > kMaxRangeCount)
+            throw SpecError(
+                "yaml_loader: !range count " + std::to_string(count) +
+                " exceeds maximum allowed (" + std::to_string(kMaxRangeCount) + ")");
         std::vector<double> values;
         values.reserve(static_cast<std::size_t>(count));
         if (count == 1) {
@@ -142,13 +153,22 @@ goss::spec::CampaignSpec load_campaign_from_yaml(const std::string& path) {
     } catch (const YAML::Exception& e) {
         throw SpecError("yaml_loader: could not load '" + path + "': " + e.what());
     }
-    goss::spec::CampaignSpec campaign;
-    if (root["name"]) campaign.name = root["name"].as<std::string>();
-    if (!root["sweeps"] || !root["sweeps"].IsSequence())
-        throw SpecError("yaml_loader: config must have a 'sweeps' list");
-    for (const YAML::Node& sweep_node : root["sweeps"])
-        campaign.sweeps.push_back(parse_sweep(sweep_node));
-    return campaign;
+    // Wrap the entire parse tree so that any yaml-cpp type-conversion errors
+    // (e.g. absent/wrong-typed fields in leaf parsers) surface as SpecError
+    // rather than escaping as raw YAML::Exception. SpecError throws from inside
+    // the parsers propagate unchanged (YAML::Exception is a separate hierarchy).
+    try {
+        goss::spec::CampaignSpec campaign;
+        if (root["name"]) campaign.name = root["name"].as<std::string>();
+        if (!root["sweeps"] || !root["sweeps"].IsSequence())
+            throw SpecError("yaml_loader: config must have a 'sweeps' list");
+        for (const YAML::Node& sweep_node : root["sweeps"])
+            campaign.sweeps.push_back(parse_sweep(sweep_node));
+        return campaign;
+    } catch (const YAML::Exception& e) {
+        throw SpecError(
+            "yaml_loader: parse error in '" + path + "': " + e.what());
+    }
 }
 
 }  // namespace goss::config

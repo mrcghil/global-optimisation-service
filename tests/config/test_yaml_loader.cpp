@@ -117,3 +117,52 @@ TEST(YamlLoader, MissingFileThrows) {
         goss::config::load_campaign_from_yaml("/no/such/goss_config.yaml"),
         goss::spec::SpecError);
 }
+
+// I-3: a non-numeric entry in a plain axis values list must throw SpecError,
+// not leak a raw YAML::TypeConversion exception.
+TEST(YamlLoader, NonNumericValueThrowsSpecError) {
+    const std::string yaml = R"(
+name: t
+sweeps:
+  - label: s
+    base:
+      problem: { name: queue, version: v1 }
+    groups:
+      - [ { parameter: arrival_rate, values: [1.0, "abc"] } ]
+)";
+    const std::string path = write_temp_yaml(yaml);
+    EXPECT_THROW(goss::config::load_campaign_from_yaml(path), goss::spec::SpecError);
+    std::remove(path.c_str());
+}
+
+// I-3: omitting `version` from `base.problem` must throw SpecError, not a raw
+// YAML::TypeConversion exception from the bare `.as<std::string>()` call.
+TEST(YamlLoader, MissingProblemFieldsThrowSpecError) {
+    const std::string yaml = R"(
+name: t
+sweeps:
+  - label: s
+    base:
+      problem: { name: queue }
+)";
+    const std::string path = write_temp_yaml(yaml);
+    EXPECT_THROW(goss::config::load_campaign_from_yaml(path), goss::spec::SpecError);
+    std::remove(path.c_str());
+}
+
+// I-2: an excessively large !range count must throw SpecError before attempting
+// to reserve or allocate the vector.
+TEST(YamlLoader, RangeCountTooLargeThrows) {
+    const std::string yaml = R"(
+name: t
+sweeps:
+  - label: s
+    base:
+      problem: { name: queue, version: v1 }
+    groups:
+      - [ { parameter: arrival_rate, values: !range [0.0, 1.0, 1000000001] } ]
+)";
+    const std::string path = write_temp_yaml(yaml);
+    EXPECT_THROW(goss::config::load_campaign_from_yaml(path), goss::spec::SpecError);
+    std::remove(path.c_str());
+}
