@@ -80,18 +80,38 @@ struct Axis {
     std::vector<double> values;
 };
 
-/// A parametric family over a base RunSpec. `combinator` is "product" (Cartesian
-/// product of all axes) or "zip" (index-wise pairing; axes must be equal length).
-struct SweepSpec {
-    RunSpec           base;
+/// A group of axes whose values advance together (index-wise "zip"). All axes in
+/// a group MUST have equal-length `values`. Groups are the building block of a
+/// grid: axes zip WITHIN a group, and groups are combined by cartesian PRODUCT.
+struct AxisGroup {
     std::vector<Axis> axes;
-    std::string       combinator = "product";
-    std::string       label;
+};
 
-    /// Expands to one concrete RunSpec per parameter combination. Each expanded
-    /// spec is `base` with the axis parameters overlaid onto base.parameters by
-    /// name. Throws SpecError on an empty axis, an unknown combinator, or (for
-    /// "zip") axes of differing length.
+/// A parametric family over a base RunSpec. The preferred way to describe a
+/// sweep is via `groups` (zip within, product across). The legacy `axes` +
+/// `combinator` fields are kept for backward compatibility only.
+struct SweepSpec {
+    RunSpec base;
+
+    /// Grouped axes: zip within a group, cartesian product across groups. This is
+    /// the preferred way to describe a sweep. When non-empty, `axes`/`combinator`
+    /// below are ignored.
+    std::vector<AxisGroup> groups;
+
+    /// DEPRECATED — backward-compat only; slated for removal once `groups` is
+    /// validated as the superior model (a single group reproduces "zip",
+    /// single-axis groups reproduce "product"). Do not add new callers.
+    std::vector<Axis> axes;
+    /// DEPRECATED — backward-compat only (see `axes`). "product" | "zip".
+    std::string combinator = "product";
+
+    std::string label;
+
+    /// Expands to one concrete RunSpec per parameter combination. If `groups` is
+    /// non-empty, axes zip within each group (equal-length required) and groups
+    /// combine by cartesian product. Otherwise the legacy `axes` + `combinator`
+    /// path is used. Throws SpecError on an empty axis, unequal-length axes in a
+    /// group (or a zip), or an unknown combinator.
     std::vector<RunSpec> expand() const;
 };
 

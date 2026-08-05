@@ -147,3 +147,49 @@ TEST(SweepExpand, NoAxesYieldsBaseRun) {
     ASSERT_EQ(runs.size(), 1u);
     EXPECT_EQ(runs[0].parameters, sweep.base.parameters);
 }
+
+TEST(SweepExpandGroups, ZipsWithinGroupAndProductsAcrossGroups) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    // Group 0: two axes changing together (zip), length 2.
+    // Group 1: one axis of length 3.  Expect 2 * 3 = 6 runs.
+    goss::spec::AxisGroup group_zip;
+    group_zip.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1, 0.2}}};
+    goss::spec::AxisGroup group_single;
+    group_single.axes = {{"cost_weight", {0.05, 0.1, 0.5}}};
+    sweep.groups = {group_zip, group_single};
+
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 6u);
+    // Group 0 varies slowest (its two axes move together); group 1 varies fastest.
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs[1].parameters.at("cost_weight"), 0.1);
+    EXPECT_DOUBLE_EQ(runs[3].parameters.at("arrival_rate"), 2.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 2.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+}
+
+TEST(SweepExpandGroups, RejectsUnequalLengthAxesWithinGroup) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup bad;
+    bad.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1}}};
+    sweep.groups = {bad};
+    EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
+}
+
+TEST(SweepExpandGroups, SingleAxisGroupsReproduceProductGrid) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup g0; g0.axes = {{"arrival_rate", {1.0, 2.0, 3.0}}};
+    goss::spec::AxisGroup g1; g1.axes = {{"cost_weight", {0.05, 0.1, 0.5}}};
+    sweep.groups = {g0, g1};
+    const auto runs = sweep.expand();
+    ASSERT_EQ(runs.size(), 9u);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("arrival_rate"), 1.0);
+    EXPECT_DOUBLE_EQ(runs.front().parameters.at("cost_weight"), 0.05);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("arrival_rate"), 3.0);
+    EXPECT_DOUBLE_EQ(runs.back().parameters.at("cost_weight"), 0.5);
+}
