@@ -163,7 +163,14 @@ SweepArchive execute_sweep(const SweepSpec& spec, const ProblemRegistry& registr
 
     SweepArchive archive;
     archive.spec = spec;
-    archive.axes = spec.axes;
+    // Flatten grouped axes (in group-then-axis order) for the dashboard manifest,
+    // which expects a single flat list of axes. Fall back to the legacy flat axes.
+    if (!spec.groups.empty()) {
+        for (const AxisGroup& group : spec.groups)
+            for (const Axis& axis : group.axes) archive.axes.push_back(axis);
+    } else {
+        archive.axes = spec.axes;
+    }
     archive.runs.reserve(runs.size());
     for (std::size_t i = 0; i < runs.size(); ++i) {
         const sim::SweepPoint& point = sweep_result.points[i];
