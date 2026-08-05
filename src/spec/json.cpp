@@ -93,16 +93,27 @@ void from_json(const json& j, Axis& v) {
     j.at("values").get_to(v.values);
 }
 
+void to_json(json& j, const AxisGroup& v) {
+    j = json{{"axes", v.axes}};
+}
+void from_json(const json& j, AxisGroup& v) {
+    j.at("axes").get_to(v.axes);
+}
+
 void to_json(json& j, const SweepSpec& v) {
     j = json{{"base", v.base},
+             {"groups", v.groups},
              {"axes", v.axes},
              {"combinator", v.combinator},
              {"label", v.label}};
 }
 void from_json(const json& j, SweepSpec& v) {
     j.at("base").get_to(v.base);
-    j.at("axes").get_to(v.axes);
-    j.at("combinator").get_to(v.combinator);
+    // `groups` is the preferred field but may be absent in older configs.
+    if (j.contains("groups")) j.at("groups").get_to(v.groups);
+    // `axes`/`combinator` are legacy and optional.
+    if (j.contains("axes")) j.at("axes").get_to(v.axes);
+    if (j.contains("combinator")) j.at("combinator").get_to(v.combinator);
     j.at("label").get_to(v.label);
 }
 

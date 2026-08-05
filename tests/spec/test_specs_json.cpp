@@ -212,3 +212,32 @@ TEST(SweepExpandGroups, RejectsEmptyAxisWithinGroup) {
     sweep.groups = {bad};
     EXPECT_THROW(sweep.expand(), goss::spec::SpecError);
 }
+
+TEST(SpecJson, GroupsRoundTrip) {
+    goss::spec::SweepSpec sweep;
+    sweep.base = make_queue_run();
+    goss::spec::AxisGroup group;
+    group.axes = {{"arrival_rate", {1.0, 2.0}}, {"cost_weight", {0.1, 0.2}}};
+    sweep.groups = {group};
+    sweep.label = "grouped";
+
+    const nlohmann::json j = sweep;
+    const auto restored = j.get<goss::spec::SweepSpec>();
+    ASSERT_EQ(restored.groups.size(), 1u);
+    ASSERT_EQ(restored.groups[0].axes.size(), 2u);
+    EXPECT_EQ(restored.groups[0].axes[0].parameter, "arrival_rate");
+    EXPECT_EQ(restored.groups[0].axes[1].values.size(), 2u);
+}
+
+TEST(SpecJson, LegacySweepWithoutGroupsStillParses) {
+    // A sweep JSON produced before `groups` existed must still deserialize.
+    nlohmann::json j = {
+        {"base", make_queue_run()},
+        {"axes", {{{"parameter", "arrival_rate"}, {"values", {1.0, 2.0}}}}},
+        {"combinator", "product"},
+        {"label", "legacy"}};
+    const auto restored = j.get<goss::spec::SweepSpec>();
+    EXPECT_TRUE(restored.groups.empty());
+    ASSERT_EQ(restored.axes.size(), 1u);
+    EXPECT_EQ(restored.combinator, "product");
+}
